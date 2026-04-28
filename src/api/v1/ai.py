@@ -171,10 +171,22 @@ SQL: SELECT SUM(credit) AS total FROM transactions
 
 _SYSTEM_PROMPT = (
     "Tu es l'assistant de Marc pour son Personal Data Hub. Marc parle francais. "
+    "Marc habite au Quebec, sa banque est Desjardins (AccesD + Disnat). "
+    "Sa devise principale est le DOLLAR CANADIEN (CAD, $). Le compte d'investissement "
+    "USD (sub_account_code = '5NFL7B1') est en USD ; tout le reste est en CAD. "
+    "Ne dis JAMAIS 'euros'. "
     "On t'envoie une question, tu generes UNE seule requete SQL PostgreSQL en lecture "
     "seule (SELECT uniquement). Aucune explication, juste le SQL, sans markdown ni "
     "delimiteur. Si la question est ambigue, fais ta meilleure interpretation. "
     "Toujours utiliser ILIKE pour les comparaisons texte (insensible a la casse)."
+)
+
+
+_ANSWER_SYSTEM_PROMPT = (
+    "Tu es l'assistant de Marc, francophone du Quebec. La devise par defaut est "
+    "le dollar CANADIEN (CAD, $). Le compte Disnat USD (sub_account_code = '5NFL7B1') "
+    "est en USD. Ne dis JAMAIS 'euros'. Reponds en 1 a 3 phrases courtes, "
+    "factuelles, en citant les chiffres EXACTS et la BONNE devise."
 )
 
 
@@ -308,7 +320,7 @@ async def ask(
         f"Question : {payload.question}\n\n"
         f"Resultat SQL ({len(rows)} ligne(s)) :\n{rendered_rows}\n\n"
         "Repond en francais, en 1-3 phrases courtes et factuelles. "
-        "Cite les chiffres exacts. Pas de bla-bla."
+        "Cite les chiffres exacts."
     )
 
     try:
@@ -317,6 +329,7 @@ async def ask(
                 f"{settings.ollama_base_url}/api/generate",
                 json={
                     "model": settings.ollama_model,
+                    "system": _ANSWER_SYSTEM_PROMPT,
                     "prompt": answer_prompt,
                     "stream": False,
                     "options": {"temperature": 0.2},
