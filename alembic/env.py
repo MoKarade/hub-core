@@ -20,10 +20,11 @@ config.set_main_option(
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Quand on aura des modèles SQLAlchemy, importer leur Base ici :
-# from src.db.models import Base
-# target_metadata = Base.metadata
-target_metadata = None
+# Import de Base et de tous les modeles pour qu'Alembic detecte les tables
+# au moment du `revision --autogenerate`.
+from src.db.models import Base  # noqa: E402
+
+target_metadata = Base.metadata
 
 
 def do_run_migrations(connection: Connection) -> None:
