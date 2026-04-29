@@ -215,15 +215,30 @@ def _validate_sql(sql: str) -> str:
     cleaned = sql.strip().rstrip(";").strip()
     if not cleaned:
         raise ValueError("SQL vide")
-    if not cleaned.lower().lstrip("(").startswith(("select", "with")):
-        raise ValueError("Le SQL doit commencer par SELECT ou WITH")
+    # Mot-cles interdits VERIFIES EN PREMIER : message d erreur plus parlant
+    # quand le LLM genere un INSERT/DELETE/etc.
     if _FORBIDDEN_KEYWORDS.search(cleaned):
         raise ValueError("Mot-cle interdit detecte (INSERT/UPDATE/DELETE/...)")
+    if not cleaned.lower().lstrip("(").startswith(("select", "with")):
+        raise ValueError("Le SQL doit commencer par SELECT ou WITH")
+
+    # Extraction des noms de CTE pour les ajouter aux tables autorisees.
+    # Pattern : "WITH foo AS (...)" ou ", bar AS (...)" en cascade.
+    cte_names = {
+        m.group(1).lower()
+        for m in re.finditer(r"\bWITH\s+(\w+)\s+AS\b", cleaned, re.IGNORECASE)
+    }
+    cte_names |= {
+        m.group(1).lower()
+        for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, re.IGNORECASE)
+    }
+    allowed = _ALLOWED_TABLES | cte_names
+
     # Detection naive des tables. On extrait tout ce qui ressemble a un identifiant
     # apres FROM ou JOIN, et on verifie qu'il est whitelistee.
     table_refs = re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", cleaned, re.IGNORECASE)
     for tbl in table_refs:
-        if tbl.lower() not in _ALLOWED_TABLES:
+        if tbl.lower() not in allowed:
             raise ValueError(f"Table non autorisee : {tbl}")
     return cleaned
 

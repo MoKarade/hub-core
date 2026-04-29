@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+# Import explicite de tous les modèles pour que Base.metadata.create_all les voie
 from src.db.base import Base
-# Import explicite des modèles pour que metadata.create_all les voie
 from src.db.models import (  # noqa: F401
     Account,
     CreditCardTransaction,
@@ -48,20 +48,20 @@ async def engine():
 
 
 @pytest_asyncio.fixture
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(engine) -> AsyncGenerator[AsyncSession]:
     """Session DB scopée au test."""
-    SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with SessionLocal() as session:
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
         yield session
 
 
 @pytest_asyncio.fixture
-async def client(engine) -> AsyncGenerator[AsyncClient, None]:
+async def client(engine) -> AsyncGenerator[AsyncClient]:
     """Client HTTP avec dépendance get_db overridée vers SQLite."""
-    SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    async def _get_db_override() -> AsyncGenerator[AsyncSession, None]:
-        async with SessionLocal() as session:
+    async def _get_db_override() -> AsyncGenerator[AsyncSession]:
+        async with session_factory() as session:
             try:
                 yield session
             finally:

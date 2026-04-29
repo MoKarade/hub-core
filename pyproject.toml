@@ -44,6 +44,12 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
+# B008 : FastAPI legit pattern (Query/Depends en argument default)
+# N806 : SQLAlchemy convention (SessionLocal en PascalCase)
+ignore = ["B008", "N806"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
