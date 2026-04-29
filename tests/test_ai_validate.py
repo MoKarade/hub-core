@@ -63,12 +63,14 @@ class TestInvalidNonSelect:
             _validate_sql("   ")
 
     def test_starts_with_other_keyword(self):
+        # SET n'est pas dans les mots-clés interdits, mais ne commence pas par SELECT/WITH
         with pytest.raises(ValueError, match="SELECT"):
-            _validate_sql("UPDATE accounts SET nickname = 'x'")
+            _validate_sql("SET search_path = public")
 
     def test_pure_function_call(self):
+        # Appel de fonction sans SELECT ni mot-clé interdit
         with pytest.raises(ValueError, match="SELECT"):
-            _validate_sql("VACUUM")
+            _validate_sql("pg_sleep(1)")
 
 
 # ----------------------------------------------------------------------
