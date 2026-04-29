@@ -8,7 +8,6 @@ import pytest
 
 from src.api.v1.ai import _ALLOWED_TABLES, _validate_sql
 
-
 # ----------------------------------------------------------------------
 # SQL valide
 # ----------------------------------------------------------------------
@@ -25,10 +24,7 @@ class TestValidSql:
         assert "SELECT" in out
 
     def test_select_with_join(self):
-        sql = (
-            "SELECT t.* FROM transactions t "
-            "JOIN accounts a ON a.id = t.account_id"
-        )
+        sql = "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id"
         assert _validate_sql(sql)
 
     def test_with_cte(self):
@@ -113,9 +109,7 @@ class TestTableWhitelist:
 
     def test_unknown_join_table_rejected(self):
         with pytest.raises(ValueError, match="non autoris"):
-            _validate_sql(
-                "SELECT * FROM accounts a JOIN admin_secrets s ON a.id = s.user_id"
-            )
+            _validate_sql("SELECT * FROM accounts a JOIN admin_secrets s ON a.id = s.user_id")
 
     def test_all_whitelisted_tables_accepted(self):
         # Chaque table whitelistée doit pouvoir être utilisée

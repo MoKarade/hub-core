@@ -54,13 +54,16 @@ async def test_filter_activity_type(client, dedup):
         "/v1/locations/points",
         json=_point_payload(dedup("walk-1"), activity_type="walking"),
     )
-    await client.post("/v1/locations/points", json=_point_payload(
-        dedup("drive-1"),
-        activity_type="driving",
-        timestamp_utc="2026-01-15T15:00:00Z",
-        latitude_e7=467383001,
-        longitude_e7=-712433001,
-    ))
+    await client.post(
+        "/v1/locations/points",
+        json=_point_payload(
+            dedup("drive-1"),
+            activity_type="driving",
+            timestamp_utc="2026-01-15T15:00:00Z",
+            latitude_e7=467383001,
+            longitude_e7=-712433001,
+        ),
+    )
 
     walks = await client.get("/v1/locations/points?activity_type=walking")
     drives = await client.get("/v1/locations/points?activity_type=driving")
@@ -70,16 +73,22 @@ async def test_filter_activity_type(client, dedup):
 
 @pytest.mark.asyncio
 async def test_filter_source(client, dedup):
-    await client.post("/v1/locations/points", json=_point_payload(
-        dedup("google-1"),
-        source="google_takeout_timeline",
-    ))
-    await client.post("/v1/locations/points", json=_point_payload(
-        dedup("manual-1"),
-        source="manual_pin",
-        latitude_e7=467383002,
-        longitude_e7=-712433002,
-    ))
+    await client.post(
+        "/v1/locations/points",
+        json=_point_payload(
+            dedup("google-1"),
+            source="google_takeout_timeline",
+        ),
+    )
+    await client.post(
+        "/v1/locations/points",
+        json=_point_payload(
+            dedup("manual-1"),
+            source="manual_pin",
+            latitude_e7=467383002,
+            longitude_e7=-712433002,
+        ),
+    )
 
     google = await client.get("/v1/locations/points?source=google_takeout_timeline")
     manual = await client.get("/v1/locations/points?source=manual_pin")

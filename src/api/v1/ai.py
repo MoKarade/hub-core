@@ -225,12 +225,10 @@ def _validate_sql(sql: str) -> str:
     # Extraction des noms de CTE pour les ajouter aux tables autorisees.
     # Pattern : "WITH foo AS (...)" ou ", bar AS (...)" en cascade.
     cte_names = {
-        m.group(1).lower()
-        for m in re.finditer(r"\bWITH\s+(\w+)\s+AS\b", cleaned, re.IGNORECASE)
+        m.group(1).lower() for m in re.finditer(r"\bWITH\s+(\w+)\s+AS\b", cleaned, re.IGNORECASE)
     }
     cte_names |= {
-        m.group(1).lower()
-        for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, re.IGNORECASE)
+        m.group(1).lower() for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, re.IGNORECASE)
     }
     allowed = _ALLOWED_TABLES | cte_names
 
@@ -284,10 +282,7 @@ async def ask(
 ) -> AskResponse:
     """Questionne le hub en francais. LLM -> SQL -> exec -> LLM -> reponse."""
     # 1. Pass 1 LLM : genere le SQL.
-    sql_prompt = (
-        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
-        f"Q: {payload.question}\nSQL:"
-    )
+    sql_prompt = f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\nQ: {payload.question}\nSQL:"
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:

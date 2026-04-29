@@ -70,7 +70,4 @@ class Transaction(Base):
     def __repr__(self) -> str:
         amount = self.debit or self.credit or 0
         sign = "-" if self.debit else "+"
-        return (
-            f"<Transaction {self.transaction_date} {sign}{amount} "
-            f"{self.description[:40]!r}>"
-        )
+        return f"<Transaction {self.transaction_date} {sign}{amount} {self.description[:40]!r}>"

@@ -121,9 +121,7 @@ async def list_location_points(
             LocationPoint.timestamp_utc >= datetime.combine(start_date, datetime.min.time())
         )
     if end_date is not None:
-        q = q.where(
-            LocationPoint.timestamp_utc <= datetime.combine(end_date, datetime.max.time())
-        )
+        q = q.where(LocationPoint.timestamp_utc <= datetime.combine(end_date, datetime.max.time()))
     if min_lat is not None:
         q = q.where(LocationPoint.latitude >= Decimal(str(min_lat)))
     if max_lat is not None:

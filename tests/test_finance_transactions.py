@@ -46,6 +46,7 @@ async def test_create_transaction_debit(client, dedup):
     assert r.status_code == 201
     body = r.json()
     from decimal import Decimal
+
     assert Decimal(body["debit"]) == Decimal("100.00")
     assert body["credit"] is None
 
@@ -66,6 +67,7 @@ async def test_create_transaction_credit(client, dedup):
     r = await client.post("/v1/finance/transactions", json=payload)
     assert r.status_code == 201
     from decimal import Decimal
+
     assert Decimal(r.json()["credit"]) == Decimal("250.00")
 
 
@@ -192,9 +194,7 @@ async def test_filter_by_date_range(client, dedup):
         )
 
     # Range février uniquement
-    r = await client.get(
-        "/v1/finance/transactions?start_date=2026-02-01&end_date=2026-02-28"
-    )
+    r = await client.get("/v1/finance/transactions?start_date=2026-02-01&end_date=2026-02-28")
     rows = r.json()
     assert len(rows) == 1
     assert rows[0]["transaction_date"] == "2026-02-15"
