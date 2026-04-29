@@ -77,7 +77,9 @@ class CreditCardTransaction(Base):
     )
 
     # Relations
-    account: Mapped["Account"] = relationship(back_populates="credit_card_transactions")  # noqa: F821
+    account: Mapped["Account"] = relationship(  # noqa: F821
+        back_populates="credit_card_transactions",
+    )
 
     def __repr__(self) -> str:
         return (

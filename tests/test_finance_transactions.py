@@ -3,7 +3,11 @@
 import pytest
 
 
-async def _create_account(client, masked: str = "999999-EOP", account_type: str = "checking") -> str:
+async def _create_account(
+    client,
+    masked: str = "999999-EOP",
+    account_type: str = "checking",
+) -> str:
     r = await client.post(
         "/v1/finance/accounts",
         json={

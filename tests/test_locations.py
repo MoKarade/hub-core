@@ -50,7 +50,10 @@ async def test_idempotence(client, dedup):
 
 @pytest.mark.asyncio
 async def test_filter_activity_type(client, dedup):
-    await client.post("/v1/locations/points", json=_point_payload(dedup("walk-1"), activity_type="walking"))
+    await client.post(
+        "/v1/locations/points",
+        json=_point_payload(dedup("walk-1"), activity_type="walking"),
+    )
     await client.post("/v1/locations/points", json=_point_payload(
         dedup("drive-1"),
         activity_type="driving",

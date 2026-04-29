@@ -64,7 +64,10 @@ class InvestmentTransaction(Base):
     """Prix unitaire si fourni."""
 
     amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2), nullable=True)
-    """Montant total signe (positif = entree dans le compte, negatif = sortie). NULL pour les transferts de titres ou amount n'est pas pertinent."""
+    """Montant total signe (positif = entree dans le compte, negatif = sortie).
+
+    NULL pour les transferts de titres ou amount n'est pas pertinent.
+    """
 
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     """Devise du montant si specifiee. NULL = celle du sous-compte par defaut."""
@@ -86,7 +89,9 @@ class InvestmentTransaction(Base):
         server_default=func.now(),
     )
 
-    account: Mapped["Account"] = relationship(back_populates="investment_transactions")  # noqa: F821
+    account: Mapped["Account"] = relationship(  # noqa: F821
+        back_populates="investment_transactions",
+    )
 
     def __repr__(self) -> str:
         return (

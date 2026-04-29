@@ -112,7 +112,8 @@ CREATE TABLE investment_transactions (   -- Disnat (CAD + USD)
     sub_account_code TEXT,           -- '5NFL7A3' (CAD), '5NFL7B1' (USD)
     transaction_date DATE,
     settlement_date DATE,
-    operation TEXT,                  -- 'TRANSFERT REÇU', 'ACHAT', 'VENTE', 'FRAIS', 'DIVIDENDE', 'DÉPÔT REÇU D''UNE CAISSE', etc.
+    operation TEXT,                  -- 'TRANSFERT REÇU', 'ACHAT', 'VENTE', 'FRAIS',
+                                     -- 'DIVIDENDE', 'DÉPÔT REÇU D''UNE CAISSE', etc.
     description TEXT,
     symbol TEXT,                     -- ticker boursier ou NULL
     quantity NUMERIC(20,6),

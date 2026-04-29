@@ -72,7 +72,9 @@ async def create_location_point(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LocationPoint:
     existing = (
-        await db.execute(select(LocationPoint).where(LocationPoint.dedup_hash == payload.dedup_hash))
+        await db.execute(
+            select(LocationPoint).where(LocationPoint.dedup_hash == payload.dedup_hash)
+        )
     ).scalar_one_or_none()
     if existing is not None:
         return existing
@@ -115,9 +117,13 @@ async def list_location_points(
     if end is not None:
         q = q.where(LocationPoint.timestamp_utc <= end)
     if start_date is not None:
-        q = q.where(LocationPoint.timestamp_utc >= datetime.combine(start_date, datetime.min.time()))
+        q = q.where(
+            LocationPoint.timestamp_utc >= datetime.combine(start_date, datetime.min.time())
+        )
     if end_date is not None:
-        q = q.where(LocationPoint.timestamp_utc <= datetime.combine(end_date, datetime.max.time()))
+        q = q.where(
+            LocationPoint.timestamp_utc <= datetime.combine(end_date, datetime.max.time())
+        )
     if min_lat is not None:
         q = q.where(LocationPoint.latitude >= Decimal(str(min_lat)))
     if max_lat is not None:
