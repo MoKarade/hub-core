@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.v1.events import broadcast
+
 from src.db.models import (
     Account,
     CreditCardTransaction,
@@ -329,6 +331,15 @@ async def create_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    await broadcast(
+        "new_transaction",
+        {
+            "account_id": str(txn.account_id),
+            "description": (txn.description or "")[:60],
+            "amount": str(txn.debit or txn.credit or 0),
+            "currency": "CAD",
+        },
+    )
     return txn
 
 
@@ -394,6 +405,15 @@ async def create_credit_card_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    await broadcast(
+        "new_transaction",
+        {
+            "account_id": str(txn.account_id),
+            "description": (txn.description or "")[:60],
+            "amount": str(txn.amount or 0),
+            "currency": "CAD",
+        },
+    )
     return txn
 
 

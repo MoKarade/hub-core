@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.v1.events import broadcast
 from src.db.models import LocationPoint
 from src.db.session import get_db
 
@@ -83,6 +84,13 @@ async def create_location_point(
     db.add(pt)
     await db.commit()
     await db.refresh(pt)
+    await broadcast(
+        "new_location",
+        {
+            "timestamp_utc": pt.timestamp_utc.isoformat(),
+            "activity_type": pt.activity_type,
+        },
+    )
     return pt
 
 

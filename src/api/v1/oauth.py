@@ -1,0 +1,223 @@
+"""Routes OAuth 2.0 — flow Authorization Code + PKCE pour les services Google.
+
+Endpoints :
+  GET  /v1/oauth/google/start?service=gmail        → redirige vers Google
+  GET  /v1/oauth/callback?code=...&state=...       → reçoit, échange, sauve, redirige
+  GET  /v1/oauth/status                            → liste des services connectés
+  POST /v1/oauth/google/{service}/revoke           → révoque le token
+
+Le `state` PKCE est stocké en mémoire (dict) — OK pour single-instance.
+En multi-instance, faudrait Redis (out of scope Phase 3).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.config import get_settings
+from src.core.crypto import decrypt_str
+from src.core.logging import logger
+from src.db.models.oauth_token import OAuthToken
+from src.db.session import get_db
+from src.services.oauth_google import (
+    SERVICE_SCOPES,
+    GoogleService,
+    build_authorize_url,
+    exchange_code_for_tokens,
+    generate_pkce_pair,
+    generate_state,
+    get_userinfo,
+    revoke_token,
+    save_token,
+)
+
+router = APIRouter(prefix="/oauth", tags=["oauth"])
+
+# ── State storage (in-memory) ────────────────────────────────────────────────
+# state → (service, code_verifier, created_at). Expire après 10 min.
+_STATE_STORE: dict[str, tuple[str, str, datetime]] = {}
+_STATE_TTL_SECONDS = 600
+
+
+def _cleanup_old_states() -> None:
+    """Retire les states expirés du store (appelé à chaque start)."""
+    now = datetime.now()
+    expired = [k for k, (_, _, ts) in _STATE_STORE.items() if (now - ts).total_seconds() > _STATE_TTL_SECONDS]
+    for k in expired:
+        _STATE_STORE.pop(k, None)
+
+
+# ── Schémas réponse ──────────────────────────────────────────────────────────
+
+
+class OAuthStatusItem(BaseModel):
+    """État d'un token OAuth pour un service."""
+
+    provider: str
+    service: str
+    user_email: str
+    connected: bool
+    expired: bool
+    revoked: bool
+    scopes: list[str]
+    expires_at: datetime
+    last_refreshed_at: datetime | None
+
+
+class OAuthStatusResponse(BaseModel):
+    """Liste des services OAuth connectés."""
+
+    tokens: list[OAuthStatusItem]
+    available_services: list[str]
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+
+@router.get("/google/start")
+async def oauth_google_start(
+    service: Annotated[str, Query(description="gmail/photos/drive/calendar/fitness/people/tasks/youtube/all")] = "all",
+):
+    """Démarre le flow OAuth pour un service Google donné.
+
+    Génère state + PKCE, stocke côté serveur, redirige vers Google.
+    """
+    settings = get_settings()
+    if not settings.google_oauth_client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="OAuth Google non configuré. Manque GOOGLE_OAUTH_CLIENT_ID dans .env.",
+        )
+    if service not in (*SERVICE_SCOPES.keys(), "all"):
+        raise HTTPException(status_code=400, detail=f"Service inconnu : {service}")
+
+    _cleanup_old_states()
+
+    state = generate_state()
+    code_verifier, code_challenge = generate_pkce_pair()
+    _STATE_STORE[state] = (service, code_verifier, datetime.now())
+
+    url = build_authorize_url(service, state, code_challenge)
+    logger.info("oauth_start", service=service, state=state[:8])
+    return RedirectResponse(url=url, status_code=302)
+
+
+@router.get("/callback")
+async def oauth_callback(
+    code: Annotated[str | None, Query()] = None,
+    state: Annotated[str | None, Query()] = None,
+    error: Annotated[str | None, Query()] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Callback OAuth — reçoit le code de Google, échange contre tokens, sauve en DB.
+
+    Redirige le browser vers le frontend après succès/échec.
+    """
+    settings = get_settings()
+    frontend_url = settings.frontend_url.rstrip("/")
+
+    if error:
+        logger.warning("oauth_callback_error", error=error)
+        return RedirectResponse(url=f"{frontend_url}/settings?oauth_error={error}", status_code=302)
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Manque code ou state")
+
+    stored = _STATE_STORE.pop(state, None)
+    if not stored:
+        raise HTTPException(status_code=400, detail="State invalide ou expiré (replay attack ?)")
+
+    service, code_verifier, _created = stored
+
+    try:
+        token_data = await exchange_code_for_tokens(code, code_verifier)
+    except Exception as e:
+        logger.error("oauth_token_exchange_failed", error=str(e))
+        return RedirectResponse(
+            url=f"{frontend_url}/settings?oauth_error=token_exchange_failed", status_code=302
+        )
+
+    # Récupère l'email du user via userinfo
+    try:
+        userinfo = await get_userinfo(token_data["access_token"])
+        user_email = userinfo.get("email") or "unknown"
+    except Exception as e:
+        logger.warning("oauth_userinfo_failed", error=str(e))
+        user_email = "unknown"
+
+    await save_token(
+        db,
+        service=service,
+        user_email=user_email,
+        access_token=token_data["access_token"],
+        refresh_token=token_data.get("refresh_token"),
+        expires_in=token_data.get("expires_in", 3600),
+        scope=token_data.get("scope", ""),
+    )
+
+    logger.info("oauth_token_saved", service=service, user_email=user_email)
+    return RedirectResponse(
+        url=f"{frontend_url}/settings?oauth_success={service}", status_code=302
+    )
+
+
+@router.get("/status", response_model=OAuthStatusResponse)
+async def oauth_status(db: AsyncSession = Depends(get_db)) -> OAuthStatusResponse:
+    """Liste les tokens OAuth en DB (sans exposer les valeurs en clair)."""
+    stmt = select(OAuthToken).order_by(OAuthToken.created_at.desc())
+    rows = (await db.execute(stmt)).scalars().all()
+    items = [
+        OAuthStatusItem(
+            provider=t.provider,
+            service=t.service,
+            user_email=t.user_email,
+            connected=t.is_usable,
+            expired=t.is_expired,
+            revoked=t.is_revoked,
+            scopes=t.scopes,
+            expires_at=t.token_expires_at,
+            last_refreshed_at=t.last_refreshed_at,
+        )
+        for t in rows
+    ]
+    return OAuthStatusResponse(
+        tokens=items,
+        available_services=sorted(SERVICE_SCOPES.keys()),
+    )
+
+
+@router.post("/google/{service}/revoke")
+async def oauth_google_revoke(
+    service: GoogleService,
+    db: AsyncSession = Depends(get_db),
+):
+    """Révoque le token Google pour un service donné. Marque revoked_at en DB
+    + appelle l'endpoint Google /revoke (best-effort)."""
+    stmt = select(OAuthToken).where(
+        OAuthToken.provider == "google",
+        OAuthToken.service == service,
+    )
+    token = (await db.execute(stmt)).scalar_one_or_none()
+    if not token:
+        raise HTTPException(status_code=404, detail=f"Aucun token pour service={service}")
+
+    # Best-effort revoke côté Google
+    try:
+        access = decrypt_str(token.access_token_encrypted)
+        await revoke_token(access)
+    except Exception as e:
+        logger.warning("oauth_revoke_remote_failed", service=service, error=str(e))
+
+    # Marque révoqué localement
+    from datetime import UTC
+    token.revoked_at = datetime.now(UTC)
+    await db.commit()
+
+    return {"status": "revoked", "service": service}

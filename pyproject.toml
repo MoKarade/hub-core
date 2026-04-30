@@ -18,6 +18,7 @@ dependencies = [
     "httpx>=0.28.0",
     "structlog>=24.4.0",
     "python-multipart>=0.0.18",
+    "cryptography>=44.0.0",  # Fernet pour chiffrer les tokens OAuth en DB
 ]
 
 [project.optional-dependencies]

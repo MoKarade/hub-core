@@ -28,6 +28,7 @@ from src.db.models import (  # noqa: F401
     InvestmentPosition,
     InvestmentTransaction,
     LocationPoint,
+    OAuthToken,
     Transaction,
 )
 from src.db.session import get_db

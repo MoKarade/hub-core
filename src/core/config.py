@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     cf_access_team_domain: str = ""
     cf_access_audience: str = ""
 
+    # Google OAuth 2.0 (Phase 3+ : Gmail/Photos/Drive/Calendar/Fit/People/Tasks)
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = "http://localhost:8000/v1/oauth/callback"
+
+    # Frontend URL (pour rediriger après OAuth callback)
+    frontend_url: str = "http://localhost:3000"
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ALLOWED_ORIGINS (string CSV) en liste."""
