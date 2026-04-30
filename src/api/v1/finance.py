@@ -19,7 +19,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.events import broadcast
-
 from src.db.models import (
     Account,
     CreditCardTransaction,

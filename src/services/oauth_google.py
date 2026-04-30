@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -89,7 +90,9 @@ def generate_pkce_pair() -> tuple[str, str]:
     code_challenge : SHA256(verifier) en base64url (envoyé à Google)
     """
     verifier = secrets.token_urlsafe(64)[:128]
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    )
     return verifier, challenge
 
 
@@ -142,12 +145,13 @@ def _scrub_oauth_error(body: str) -> str:
     code_verifier ou client_secret reflected dans certaines erreurs).
     """
     try:
-        data = httpx.Response(200, text=body).json() if body.strip().startswith("{") else None
-        if isinstance(data, dict):
-            err = data.get("error", "unknown_error")
-            desc = data.get("error_description", "")
-            return f"{err}: {desc[:80]}" if desc else err
-    except Exception:
+        if body.strip().startswith("{"):
+            data = json.loads(body)
+            if isinstance(data, dict):
+                err = data.get("error", "unknown_error")
+                desc = data.get("error_description", "")
+                return f"{err}: {desc[:80]}" if desc else err
+    except (json.JSONDecodeError, ValueError):
         pass
     return "unknown_error"
 

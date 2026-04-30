@@ -9,7 +9,6 @@ Mocks Google HTTP via `respx`. Tests :
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -26,7 +25,6 @@ from src.services.oauth_google import (
     get_scopes_for,
     save_token,
 )
-
 
 # ── Tests utilities ─────────────────────────────────────────────────────────
 
@@ -73,6 +71,7 @@ class TestAuthorizeUrl:
     def test_authorize_url_contains_required_params(self, monkeypatch):
         # Force un client_id pour le test
         from src.core import config
+
         config.get_settings.cache_clear()
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
 
@@ -135,14 +134,22 @@ class TestSaveToken:
     async def test_save_token_upsert(self, db_session, fake_token_data):
         """Save 2x avec même (provider, service, user) → UPDATE pas INSERT."""
         t1 = await save_token(
-            db_session, service="gmail", user_email="marc@x.com",
-            access_token="old-token", refresh_token="refresh-1",
-            expires_in=3600, scope="openid",
+            db_session,
+            service="gmail",
+            user_email="marc@x.com",
+            access_token="old-token",
+            refresh_token="refresh-1",
+            expires_in=3600,
+            scope="openid",
         )
         t2 = await save_token(
-            db_session, service="gmail", user_email="marc@x.com",
-            access_token="new-token", refresh_token="refresh-2",
-            expires_in=7200, scope="openid email",
+            db_session,
+            service="gmail",
+            user_email="marc@x.com",
+            access_token="new-token",
+            refresh_token="refresh-2",
+            expires_in=7200,
+            scope="openid email",
         )
 
         assert t1.id == t2.id  # même row
@@ -158,7 +165,9 @@ class TestOAuthToken:
     async def test_is_expired(self, db_session):
         # Token expiré
         token = OAuthToken(
-            provider="google", service="gmail", user_email="x@y.com",
+            provider="google",
+            service="gmail",
+            user_email="x@y.com",
             access_token_encrypted=encrypt_str("at"),
             refresh_token_encrypted=encrypt_str("rt"),
             token_expires_at=datetime.now(UTC) - timedelta(minutes=5),
@@ -169,7 +178,9 @@ class TestOAuthToken:
 
     async def test_revoked_not_usable(self, db_session):
         token = OAuthToken(
-            provider="google", service="gmail", user_email="x@y.com",
+            provider="google",
+            service="gmail",
+            user_email="x@y.com",
             access_token_encrypted=encrypt_str("at"),
             refresh_token_encrypted=encrypt_str("rt"),
             token_expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -181,7 +192,9 @@ class TestOAuthToken:
 
     async def test_no_refresh_expired_not_usable(self, db_session):
         token = OAuthToken(
-            provider="google", service="gmail", user_email="x@y.com",
+            provider="google",
+            service="gmail",
+            user_email="x@y.com",
             access_token_encrypted=encrypt_str("at"),
             refresh_token_encrypted=None,
             token_expires_at=datetime.now(UTC) - timedelta(minutes=5),
@@ -198,6 +211,7 @@ class TestOAuthRoutes:
     async def test_start_no_client_id_returns_503(self, client, monkeypatch):
         # Force un client_id vide
         from src.core import config
+
         config.get_settings.cache_clear()
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "")
 
@@ -209,6 +223,7 @@ class TestOAuthRoutes:
 
     async def test_start_unknown_service_returns_400(self, client, monkeypatch):
         from src.core import config
+
         config.get_settings.cache_clear()
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-id")
 
@@ -219,6 +234,7 @@ class TestOAuthRoutes:
 
     async def test_start_redirects_to_google(self, client, monkeypatch):
         from src.core import config
+
         config.get_settings.cache_clear()
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-id.apps.googleusercontent.com")
 

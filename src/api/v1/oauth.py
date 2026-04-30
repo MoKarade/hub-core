@@ -53,7 +53,8 @@ def _cleanup_old_states() -> None:
     """Retire les states expirés du store (appelé à chaque start)."""
     now = datetime.now(UTC)
     expired = [
-        k for k, (_, _, ts) in _STATE_STORE.items()
+        k
+        for k, (_, _, ts) in _STATE_STORE.items()
         if (now - ts).total_seconds() > _STATE_TTL_SECONDS
     ]
     for k in expired:
@@ -89,7 +90,9 @@ class OAuthStatusResponse(BaseModel):
 
 @router.get("/google/start")
 async def oauth_google_start(
-    service: Annotated[str, Query(description="gmail/photos/drive/calendar/fitness/people/tasks/youtube/all")] = "all",
+    service: Annotated[
+        str, Query(description="gmail/photos/drive/calendar/fitness/people/tasks/youtube/all")
+    ] = "all",
 ):
     """Démarre le flow OAuth pour un service Google donné.
 
@@ -182,9 +185,7 @@ async def oauth_callback(
     )
 
     logger.info("oauth_token_saved", service=service, user_email=user_email)
-    return RedirectResponse(
-        url=f"{frontend_url}/settings?oauth_success={service}", status_code=302
-    )
+    return RedirectResponse(url=f"{frontend_url}/settings?oauth_success={service}", status_code=302)
 
 
 @router.get("/status", response_model=OAuthStatusResponse)

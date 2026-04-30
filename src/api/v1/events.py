@@ -79,7 +79,7 @@ async def sse_stream(request: Request) -> StreamingResponse:
     - Se ferme proprement quand le client deconnecte.
     """
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    async def event_generator() -> AsyncGenerator[str]:
         q: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
         _clients.add(q)
         logger.info("sse_client_connected", total_clients=len(_clients))
@@ -93,7 +93,7 @@ async def sse_stream(request: Request) -> StreamingResponse:
                     event_type = payload["type"]
                     data_str = json.dumps(payload["data"], default=str)
                     yield f"event: {event_type}\ndata: {data_str}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": heartbeat\n\n"
         finally:
             _clients.discard(q)

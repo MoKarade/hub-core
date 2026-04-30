@@ -29,7 +29,9 @@ class OAuthToken(Base):
 
     __tablename__ = "oauth_tokens"
     __table_args__ = (
-        UniqueConstraint("provider", "service", "user_email", name="uq_oauth_provider_service_user"),
+        UniqueConstraint(
+            "provider", "service", "user_email", name="uq_oauth_provider_service_user"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -88,8 +90,16 @@ class OAuthToken(Base):
 
     @property
     def is_expired(self) -> bool:
-        """True si l'access token est expiré (à comparer avec datetime.now(UTC))."""
-        return datetime.now(UTC) >= self.token_expires_at
+        """True si l'access token est expiré (à comparer avec datetime.now(UTC)).
+
+        SQLite stocke les datetime en naive (perd la timezone) — on assume UTC
+        si la datetime est naive. Postgres avec DateTime(timezone=True) garde
+        l'info correctement.
+        """
+        expires = self.token_expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        return datetime.now(UTC) >= expires
 
     @property
     def is_revoked(self) -> bool:
