@@ -33,7 +33,14 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
 
     # Sécurité
-    secret_key: str = Field(default="changeme", min_length=8)
+    secret_key: str = Field(
+        default="changeme",
+        min_length=8,
+        description=(
+            "Secret pour Fernet (chiffrement OAuth tokens) + signature cookies. "
+            "32+ chars en prod (sinon RuntimeError au startup, cf. validate_in_production)."
+        ),
+    )
 
     # CORS
     cors_allowed_origins: str = "http://localhost:3000"
@@ -58,6 +65,25 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() in ("prod", "production")
+
+    def validate_for_production(self) -> None:
+        """Vérifie que la conf est safe pour la prod. À appeler au startup.
+
+        Lève RuntimeError si quelque chose de critique manque/insecure.
+        """
+        if not self.is_production:
+            return
+        if self.secret_key == "changeme" or self.secret_key.startswith("changeme"):
+            raise RuntimeError(
+                "SECRET_KEY est encore au défaut 'changeme'. "
+                "Génère-en un avec: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+        if len(self.secret_key) < 32:
+            raise RuntimeError(
+                f"SECRET_KEY trop court ({len(self.secret_key)} chars). 32+ recommandé en prod."
+            )
+        if self.google_oauth_client_secret and not self.google_oauth_client_id:
+            raise RuntimeError("GOOGLE_OAUTH_CLIENT_SECRET défini sans CLIENT_ID")
 
 
 @lru_cache

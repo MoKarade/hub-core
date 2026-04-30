@@ -137,6 +137,25 @@ def build_authorize_url(
 # ── Token exchange ───────────────────────────────────────────────────────────
 
 
+def _scrub_oauth_error(body: str) -> str:
+    """Extrait l'`error` Google sans leak du body complet (qui peut contenir
+    code_verifier ou client_secret reflected dans certaines erreurs).
+    """
+    try:
+        data = httpx.Response(200, text=body).json() if body.strip().startswith("{") else None
+        if isinstance(data, dict):
+            err = data.get("error", "unknown_error")
+            desc = data.get("error_description", "")
+            return f"{err}: {desc[:80]}" if desc else err
+    except Exception:
+        pass
+    return "unknown_error"
+
+
+class InvalidGrantError(RuntimeError):
+    """Refresh token révoqué/invalide côté Google. L'utilisateur doit re-consent."""
+
+
 async def exchange_code_for_tokens(code: str, code_verifier: str) -> dict:
     """Échange le code reçu en callback contre access_token + refresh_token.
 
@@ -158,12 +177,9 @@ async def exchange_code_for_tokens(code: str, code_verifier: str) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(TOKEN_URL, data=data)
         if resp.status_code != 200:
-            logger.error(
-                "oauth_exchange_failed",
-                status=resp.status_code,
-                body=resp.text[:500],
-            )
-            raise RuntimeError(f"Token exchange échec : {resp.status_code} {resp.text[:200]}")
+            err = _scrub_oauth_error(resp.text)
+            logger.error("oauth_exchange_failed", status=resp.status_code, error=err)
+            raise RuntimeError(f"Token exchange échec : {resp.status_code} ({err})")
         return resp.json()
 
 
@@ -171,7 +187,10 @@ async def refresh_access_token(refresh_token: str) -> dict:
     """Utilise le refresh_token pour obtenir un nouvel access_token.
 
     Retourne le dict de Google : {access_token, expires_in, scope, token_type}.
-    Note: refresh_token n'est PAS retourné (il reste le même).
+    Note: refresh_token peut être renvoyé en cas de rotation (rare).
+
+    Lève InvalidGrantError si le refresh_token est révoqué/invalide
+    (l'utilisateur doit re-consent).
     """
     settings = get_settings()
     data = {
@@ -184,8 +203,11 @@ async def refresh_access_token(refresh_token: str) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(TOKEN_URL, data=data)
         if resp.status_code != 200:
-            logger.error("oauth_refresh_failed", status=resp.status_code, body=resp.text[:500])
-            raise RuntimeError(f"Refresh échec : {resp.status_code}")
+            err = _scrub_oauth_error(resp.text)
+            logger.error("oauth_refresh_failed", status=resp.status_code, error=err)
+            if "invalid_grant" in err.lower():
+                raise InvalidGrantError(f"Refresh token révoqué : {err}")
+            raise RuntimeError(f"Refresh échec : {resp.status_code} ({err})")
         return resp.json()
 
 
@@ -298,12 +320,21 @@ async def get_valid_access_token(
         )
 
     refresh = decrypt_str(token.refresh_token_encrypted)
-    new_data = await refresh_access_token(refresh)
+    try:
+        new_data = await refresh_access_token(refresh)
+    except InvalidGrantError:
+        # Refresh révoqué côté Google → mark révoqué localement, force re-consent
+        token.revoked_at = datetime.now(UTC)
+        await db.commit()
+        raise
 
-    # Update le token (note: refresh_token reste le même)
+    # Update le token
     token.access_token_encrypted = encrypt_str(new_data["access_token"])
     token.token_expires_at = datetime.now(UTC) + timedelta(seconds=new_data["expires_in"])
     token.last_refreshed_at = datetime.now(UTC)
+    # Google peut rotater le refresh_token (rare mais arrive)
+    if "refresh_token" in new_data and new_data["refresh_token"]:
+        token.refresh_token_encrypted = encrypt_str(new_data["refresh_token"])
     await db.commit()
 
     return new_data["access_token"]

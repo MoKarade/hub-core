@@ -12,7 +12,7 @@ En multi-instance, faudrait Redis (out of scope Phase 3).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -41,15 +41,21 @@ from src.services.oauth_google import (
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
 # ── State storage (in-memory) ────────────────────────────────────────────────
-# state → (service, code_verifier, created_at). Expire après 10 min.
+# state → (service, code_verifier, created_at UTC). Expire après 10 min.
+# ⚠️ Multi-worker (uvicorn --workers >1) : chaque worker a son dict, callback
+# peut tomber sur un worker qui ne connaît pas le state. Pour multi-worker,
+# remplacer par Redis ou table DB. Single-worker = OK pour usage perso.
 _STATE_STORE: dict[str, tuple[str, str, datetime]] = {}
 _STATE_TTL_SECONDS = 600
 
 
 def _cleanup_old_states() -> None:
     """Retire les states expirés du store (appelé à chaque start)."""
-    now = datetime.now()
-    expired = [k for k, (_, _, ts) in _STATE_STORE.items() if (now - ts).total_seconds() > _STATE_TTL_SECONDS]
+    now = datetime.now(UTC)
+    expired = [
+        k for k, (_, _, ts) in _STATE_STORE.items()
+        if (now - ts).total_seconds() > _STATE_TTL_SECONDS
+    ]
     for k in expired:
         _STATE_STORE.pop(k, None)
 
@@ -102,7 +108,7 @@ async def oauth_google_start(
 
     state = generate_state()
     code_verifier, code_challenge = generate_pkce_pair()
-    _STATE_STORE[state] = (service, code_verifier, datetime.now())
+    _STATE_STORE[state] = (service, code_verifier, datetime.now(UTC))
 
     url = build_authorize_url(service, state, code_challenge)
     logger.info("oauth_start", service=service, state=state[:8])
@@ -144,13 +150,26 @@ async def oauth_callback(
             url=f"{frontend_url}/settings?oauth_error=token_exchange_failed", status_code=302
         )
 
-    # Récupère l'email du user via userinfo
+    # Récupère l'email du user via userinfo (sinon fail proprement, sans
+    # fallback "unknown" qui crée des tokens orphelins + collisions sur la
+    # contrainte unique au prochain consent)
     try:
         userinfo = await get_userinfo(token_data["access_token"])
-        user_email = userinfo.get("email") or "unknown"
+        user_email = userinfo.get("email")
+        if not user_email:
+            raise ValueError("Pas d'email dans userinfo response")
     except Exception as e:
-        logger.warning("oauth_userinfo_failed", error=str(e))
-        user_email = "unknown"
+        logger.error("oauth_userinfo_failed", error=str(e))
+        return RedirectResponse(
+            url=f"{frontend_url}/settings?oauth_error=userinfo_failed", status_code=302
+        )
+
+    expires_in = token_data.get("expires_in")
+    if not expires_in or not isinstance(expires_in, int):
+        logger.error("oauth_no_expires_in", token_data_keys=list(token_data.keys()))
+        return RedirectResponse(
+            url=f"{frontend_url}/settings?oauth_error=invalid_token_response", status_code=302
+        )
 
     await save_token(
         db,
@@ -158,7 +177,7 @@ async def oauth_callback(
         user_email=user_email,
         access_token=token_data["access_token"],
         refresh_token=token_data.get("refresh_token"),
-        expires_in=token_data.get("expires_in", 3600),
+        expires_in=expires_in,
         scope=token_data.get("scope", ""),
     )
 
@@ -216,7 +235,6 @@ async def oauth_google_revoke(
         logger.warning("oauth_revoke_remote_failed", service=service, error=str(e))
 
     # Marque révoqué localement
-    from datetime import UTC
     token.revoked_at = datetime.now(UTC)
     await db.commit()
 

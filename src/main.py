@@ -15,6 +15,8 @@ async def lifespan(app: FastAPI):
     """Hooks au démarrage / arrêt du hub."""
     settings = get_settings()
     setup_logging(settings.log_level)
+    # Refuse de démarrer en prod si la conf n'est pas sécurisée (ex: secret_key=changeme)
+    settings.validate_for_production()
     logger.info("hub_startup", env=settings.app_env, app=settings.app_name)
     yield
     logger.info("hub_shutdown")
