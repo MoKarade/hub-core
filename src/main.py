@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.v1 import router as v1_router
+from src.core.cf_access import CloudflareAccessMiddleware
 from src.core.config import get_settings
 from src.core.logging import logger, setup_logging
 
@@ -38,6 +39,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Cloudflare Access JWT validation (transparent en dev local : pas de team_domain).
+    # Se déclenche uniquement quand le hub est exposé via Cloudflare Tunnel + Access.
+    app.add_middleware(CloudflareAccessMiddleware)
 
     app.include_router(v1_router)
 
