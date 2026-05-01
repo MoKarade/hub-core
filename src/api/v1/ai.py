@@ -179,7 +179,12 @@ _SYSTEM_PROMPT = (
     "On t'envoie une question, tu generes UNE seule requete SQL PostgreSQL en lecture "
     "seule (SELECT uniquement). Aucune explication, juste le SQL, sans markdown ni "
     "delimiteur. Si la question est ambigue, fais ta meilleure interpretation. "
-    "Toujours utiliser ILIKE pour les comparaisons texte (insensible a la casse)."
+    "Toujours utiliser ILIKE pour les comparaisons texte (insensible a la casse). "
+    "INTERDIT : UNION et UNION ALL (les tables ont des schemas differents). "
+    "Si la question est trop vague pour cibler UNE seule table (ex: 'tout mon data', "
+    "'liste tout'), retourne EXACTEMENT ce SQL : "
+    "SELECT 'Question trop vague, precise une categorie : transactions, comptes, "
+    "investissements, trajets, etc.' AS message"
 )
 
 
@@ -285,7 +290,8 @@ async def ask(
     sql_prompt = f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\nQ: {payload.question}\nSQL:"
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # Timeout 180s : le qwen2.5:14b peut prendre 60-120s sur prompt long (cold start).
+        async with httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(
                 f"{settings.ollama_base_url}/api/generate",
                 json={
@@ -299,12 +305,18 @@ async def ask(
             r.raise_for_status()
             generated = r.json().get("response", "").strip()
     except Exception as e:
+        # type(e).__name__ est crucial : httpx.TimeoutException a str() vide
         raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, f"Generation LLM echouee : {e}"
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Generation LLM echouee : {type(e).__name__}: {e!r}",
         ) from e
 
-    # Nettoyage des markdown delimiters au cas ou le LLM en ajoute
+    # Nettoyage : markdown delimiters + prefixes "SQL:" / "Q:" que le LLM ajoute
+    # parfois en mimickant les few-shot examples.
     generated = re.sub(r"```(?:sql)?", "", generated, flags=re.IGNORECASE).strip()
+    generated = re.sub(
+        r"^(?:SQL|Q|Query|Requete)\s*:\s*", "", generated, flags=re.IGNORECASE
+    ).strip()
 
     try:
         sql = _validate_sql(generated)
@@ -315,15 +327,31 @@ async def ask(
         ) from e
 
     # 2. Execute en lecture seule avec timeout serveur.
+    # Note : SET LOCAL statement_timeout est Postgres-only ; skip sur SQLite.
     try:
-        await db.execute(text("SET LOCAL statement_timeout = 5000"))  # 5 secondes
+        dialect_name = db.bind.dialect.name if db.bind else ""
+        if dialect_name == "postgresql":
+            await db.execute(text("SET LOCAL statement_timeout = 5000"))  # 5 secondes
         result = await db.execute(text(sql))
         rows = [dict(r._mapping) for r in result]
     except Exception as e:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Execution SQL echouee : {e}. SQL : {sql[:300]!r}",
-        ) from e
+        # Fallback gracieux : log + retourne une reponse sans crasher.
+        logger.error(
+            "ai_sql_execution_failed: sql=%r error_type=%s error=%r",
+            sql[:300],
+            type(e).__name__,
+            e,
+        )
+        return AskResponse(
+            answer=(
+                "Je n'ai pas pu trouver une reponse precise dans tes donnees. "
+                "Essaie une question plus specifique (ex: 'mes 10 dernieres transactions', "
+                "'depenses en restos en mars'), ou utilise le mode 'Discussion'."
+            ),
+            sql=sql,
+            rows=[],
+            row_count=0,
+        )
 
     # 3. Pass 2 LLM : reformule en francais.
     rendered_rows = "\n".join(str(r) for r in rows[:20]) if rows else "(aucun resultat)"
@@ -353,3 +381,73 @@ async def ask(
         answer = f"(LLM indisponible pour la reformulation : {e}). Resultat brut ci-dessus."
 
     return AskResponse(answer=answer, sql=sql, rows=rows, row_count=len(rows))
+
+
+# ---------------------------------------------------------------------
+# Chat libre (sans SQL/DB)
+# ---------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    history: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Historique [{role: 'user'|'assistant', content: str}, ...]",
+    )
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    model: str
+
+
+_CHAT_SYSTEM_PROMPT = (
+    "Tu es l'assistant personnel de Marc, integre dans son hub de donnees personnel. "
+    "Tu reponds en francais, naturel, concis et utile. "
+    "Si Marc te pose une question sur ses donnees personnelles "
+    "(transactions, depenses, trajets, mails, etc.), suggere-lui d'utiliser le mode "
+    "'Recherche dans mes donnees' qui execute du SQL sur sa DB. "
+    "Sinon reponds directement comme un assistant LLM normal."
+)
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(
+    payload: ChatRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ChatResponse:
+    """Discussion libre avec l'IA, sans toucher la DB."""
+    # Construit le prompt avec l'historique de conversation
+    convo_lines = []
+    for msg in payload.history[-10:]:  # garde les 10 derniers tours max
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        prefix = "Marc" if role == "user" else "Assistant"
+        convo_lines.append(f"{prefix}: {content}")
+    convo_lines.append(f"Marc: {payload.message}")
+    convo_lines.append("Assistant:")
+    prompt = "\n\n".join(convo_lines)
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={
+                    "model": settings.ollama_model,
+                    "system": _CHAT_SYSTEM_PROMPT,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.7},
+                },
+            )
+            r.raise_for_status()
+            answer = r.json().get("response", "").strip()
+    except Exception as e:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Chat LLM echoue : {type(e).__name__}: {e!r}",
+        ) from e
+
+    return ChatResponse(answer=answer, model=settings.ollama_model)
