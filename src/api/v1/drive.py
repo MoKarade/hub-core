@@ -189,6 +189,36 @@ class DriveFileFull(DriveFileItem):
     """IDs parents separes par virgule (text serialise)."""
 
 
+async def _get_root_folder_id(
+    db: AsyncSession, user_email: str = "marc.richard4@gmail.com"
+) -> str | None:
+    """Recupere le rootFolderId via Drive about API. Cache en memoire process."""
+    if not hasattr(_get_root_folder_id, "_cache"):
+        _get_root_folder_id._cache = {}  # type: ignore
+    cache = _get_root_folder_id._cache  # type: ignore
+    if user_email in cache:
+        return cache[user_email]
+    try:
+        access_token = await _resolve_token(db, user_email)
+    except HTTPException:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{DRIVE_API}/about",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"fields": "user(emailAddress),rootFolderId"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            root_id = data.get("rootFolderId") or "root"
+            cache[user_email] = root_id
+            return root_id
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        logger.warning("drive_about_failed: %r", e)
+        return None
+
+
 @router.get("/files", response_model=list[DriveFileFull])
 async def list_files(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -201,6 +231,13 @@ async def list_files(
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[DriveFileFull]:
+    # Si parent_id=root, on resout le rootFolderId reel via Drive about API
+    real_parent_id = parent_id
+    if parent_id == "root":
+        root_id = await _get_root_folder_id(db)
+        if root_id:
+            real_parent_id = root_id
+
     stmt = (
         select(DriveFile)
         .where(DriveFile.trashed.is_(False))
@@ -216,22 +253,16 @@ async def list_files(
         stmt = stmt.where(DriveFile.name.ilike(f"%{q}%"))
     if starred is not None:
         stmt = stmt.where(DriveFile.starred == starred)
-    if parent_id is not None:
+    if real_parent_id is not None:
         # Match : parents contient l'ID (CSV)
-        if parent_id == "root":
-            # Racine = pas de parent OU parent inconnu (orphelins)
-            # On ne peut pas vraiment savoir le rootFolderId sans appel API,
-            # donc on liste tout pour l'instant
-            pass
-        else:
-            stmt = stmt.where(
-                or_(
-                    DriveFile.parents == parent_id,
-                    DriveFile.parents.like(f"{parent_id},%"),
-                    DriveFile.parents.like(f"%,{parent_id},%"),
-                    DriveFile.parents.like(f"%,{parent_id}"),
-                )
+        stmt = stmt.where(
+            or_(
+                DriveFile.parents == real_parent_id,
+                DriveFile.parents.like(f"{real_parent_id},%"),
+                DriveFile.parents.like(f"%,{real_parent_id},%"),
+                DriveFile.parents.like(f"%,{real_parent_id}"),
             )
+        )
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).scalars().all()
     return [
