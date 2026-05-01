@@ -134,7 +134,10 @@ async def oauth_callback(
 
     if error:
         logger.warning("oauth_callback_error", error=error)
-        return RedirectResponse(url=f"{frontend_url}/settings?oauth_error={error}", status_code=302)
+        return RedirectResponse(
+            url=f"{frontend_url}/oauth/error?error={error}",
+            status_code=302,
+        )
 
     if not code or not state:
         raise HTTPException(status_code=400, detail="Manque code ou state")
@@ -150,7 +153,7 @@ async def oauth_callback(
     except Exception as e:
         logger.error("oauth_token_exchange_failed", error=str(e))
         return RedirectResponse(
-            url=f"{frontend_url}/settings?oauth_error=token_exchange_failed", status_code=302
+            url=f"{frontend_url}/oauth/error?error=token_exchange_failed", status_code=302
         )
 
     # Récupère l'email du user via userinfo (sinon fail proprement, sans
@@ -164,14 +167,14 @@ async def oauth_callback(
     except Exception as e:
         logger.error("oauth_userinfo_failed", error=str(e))
         return RedirectResponse(
-            url=f"{frontend_url}/settings?oauth_error=userinfo_failed", status_code=302
+            url=f"{frontend_url}/oauth/error?error=userinfo_failed", status_code=302
         )
 
     expires_in = token_data.get("expires_in")
     if not expires_in or not isinstance(expires_in, int):
         logger.error("oauth_no_expires_in", token_data_keys=list(token_data.keys()))
         return RedirectResponse(
-            url=f"{frontend_url}/settings?oauth_error=invalid_token_response", status_code=302
+            url=f"{frontend_url}/oauth/error?error=invalid_token_response", status_code=302
         )
 
     await save_token(
