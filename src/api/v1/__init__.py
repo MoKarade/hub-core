@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from src.api.v1 import (
     ai,
     calendar,
+    drive,
     emails,
     events,
     finance,
@@ -13,6 +14,7 @@ from src.api.v1 import (
     locations,
     oauth,
     osint,
+    photos,
 )
 
 router = APIRouter(prefix="/v1")
@@ -26,3 +28,5 @@ router.include_router(osint.router)
 router.include_router(emails.router)
 router.include_router(calendar.router)
 router.include_router(health_data.router)
+router.include_router(photos.router)
+router.include_router(drive.router)

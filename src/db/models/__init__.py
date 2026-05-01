@@ -8,12 +8,14 @@ from src.db.base import Base
 from src.db.models.account import Account
 from src.db.models.calendar_event import CalendarEvent
 from src.db.models.credit_card_transaction import CreditCardTransaction
+from src.db.models.drive_file import DriveFile
 from src.db.models.email import Email
 from src.db.models.health_metric import HealthMetric
 from src.db.models.investment_position import InvestmentPosition
 from src.db.models.investment_transaction import InvestmentTransaction
 from src.db.models.location_point import LocationPoint
 from src.db.models.oauth_token import OAuthToken
+from src.db.models.photo import Photo
 from src.db.models.transaction import Transaction
 
 __all__ = [
@@ -28,4 +30,6 @@ __all__ = [
     "Email",
     "CalendarEvent",
     "HealthMetric",
+    "Photo",
+    "DriveFile",
 ]
