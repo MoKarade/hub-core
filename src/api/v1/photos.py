@@ -222,6 +222,42 @@ class PhotosStats(BaseModel):
     by_camera: list[dict[str, Any]]
 
 
+@router.get("/thumb/{media_id}")
+async def photo_thumbnail(
+    media_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    size: Annotated[int, Query(ge=64, le=2048)] = 200,
+):
+    """Proxy authentifie pour les thumbnails Picker API (qui necessitent Bearer token).
+    Le browser ne peut pas charger directement Picker baseUrl, on doit proxifier.
+    """
+    from fastapi.responses import Response
+
+    photo = (await db.execute(select(Photo).where(Photo.media_id == media_id))).scalar_one_or_none()
+    if not photo or not photo.base_url:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo introuvable")
+
+    access_token = await _resolve_token(db, photo.user_email)
+    # Picker baseUrl + suffix pour resize : =w{size}-h{size}-c (crop centered)
+    url = f"{photo.base_url}=w{size}-h{size}-c"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+            r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # Si baseUrl expire (1h), il faut re-pick via Picker API.
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Thumbnail load failed: {e.response.status_code} (baseUrl peut-etre expire)",
+        ) from e
+
+    return Response(
+        content=r.content,
+        media_type=r.headers.get("Content-Type", "image/jpeg"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @router.get("/stats", response_model=PhotosStats)
 async def photos_stats(db: Annotated[AsyncSession, Depends(get_db)]) -> PhotosStats:
     total = (await db.execute(select(func.count(Photo.id)))).scalar() or 0

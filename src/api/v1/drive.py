@@ -192,11 +192,14 @@ class DriveFileFull(DriveFileItem):
 async def _get_root_folder_id(
     db: AsyncSession, user_email: str = "marc.richard4@gmail.com"
 ) -> str | None:
-    """Recupere le rootFolderId via Drive about API. Cache en memoire process."""
+    """Recupere le vrai ID du dossier racine Drive (alias 'root' -> ID reel).
+    Drive v3 about n'a PAS rootFolderId, faut faire files.get('root').
+    Cache en memoire process apres premier call.
+    """
     if not hasattr(_get_root_folder_id, "_cache"):
         _get_root_folder_id._cache = {}  # type: ignore
     cache = _get_root_folder_id._cache  # type: ignore
-    if user_email in cache:
+    if user_email in cache and cache[user_email]:
         return cache[user_email]
     try:
         access_token = await _resolve_token(db, user_email)
@@ -205,17 +208,19 @@ async def _get_root_folder_id(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(
-                f"{DRIVE_API}/about",
+                f"{DRIVE_API}/files/root",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={"fields": "user(emailAddress),rootFolderId"},
+                params={"fields": "id,name"},
             )
             r.raise_for_status()
             data = r.json()
-            root_id = data.get("rootFolderId") or "root"
-            cache[user_email] = root_id
+            root_id = data.get("id")
+            if root_id:
+                cache[user_email] = root_id
+                logger.info("drive_root_folder_id resolved: %s", root_id)
             return root_id
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.warning("drive_about_failed: %r", e)
+        logger.warning("drive_files_root_failed: %r", e)
         return None
 
 
