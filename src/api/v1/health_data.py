@@ -43,6 +43,9 @@ FIT_DATA_TYPES = {
     "com.google.heart_rate.bpm": "heart_rate_avg",
 }
 
+# Sleep activityType code = 72 (Google Fit)
+SLEEP_ACTIVITY_TYPE = 72
+
 
 class HealthSyncRequest(BaseModel):
     user_email: str = Field(default="marc.richard4@gmail.com")
@@ -233,24 +236,97 @@ class HealthSummary(BaseModel):
 @router.get("/summary", response_model=HealthSummary)
 async def health_summary(db: Annotated[AsyncSession, Depends(get_db)]) -> HealthSummary:
     total = (await db.execute(select(func.count(HealthMetric.id)))).scalar() or 0
+    cutoff_7d = datetime.now(UTC).date() - timedelta(days=7)
+    cutoff_14d = datetime.now(UTC).date() - timedelta(days=14)
+    cutoff_30d = datetime.now(UTC).date() - timedelta(days=30)
     by_q = (
         select(
             HealthMetric.metric,
             func.count(HealthMetric.id).label("count"),
             func.max(HealthMetric.date).label("last_date"),
             func.avg(HealthMetric.value).label("avg"),
+            func.max(HealthMetric.value).label("max"),
+            func.min(HealthMetric.value).label("min"),
         )
         .group_by(HealthMetric.metric)
         .order_by(desc("count"))
     )
     rows = (await db.execute(by_q)).all()
-    by_metric = [
-        {
-            "metric": r[0],
-            "count": int(r[1]),
-            "last_date": r[2].isoformat() if r[2] else None,
-            "avg": round(float(r[3]), 2) if r[3] is not None else None,
-        }
-        for r in rows
-    ]
+
+    by_metric = []
+    for r in rows:
+        metric_name = r[0]
+        # Recent value
+        last_val_q = (
+            select(HealthMetric.value)
+            .where(HealthMetric.metric == metric_name)
+            .order_by(desc(HealthMetric.date))
+            .limit(1)
+        )
+        last_val = (await db.execute(last_val_q)).scalar()
+
+        # Avg this week vs last week (compare trends)
+        avg_7d = (
+            await db.execute(
+                select(func.avg(HealthMetric.value)).where(
+                    HealthMetric.metric == metric_name, HealthMetric.date >= cutoff_7d
+                )
+            )
+        ).scalar()
+        avg_prev_7d = (
+            await db.execute(
+                select(func.avg(HealthMetric.value)).where(
+                    HealthMetric.metric == metric_name,
+                    HealthMetric.date >= cutoff_14d,
+                    HealthMetric.date < cutoff_7d,
+                )
+            )
+        ).scalar()
+        avg_30d = (
+            await db.execute(
+                select(func.avg(HealthMetric.value)).where(
+                    HealthMetric.metric == metric_name,
+                    HealthMetric.date >= cutoff_30d,
+                )
+            )
+        ).scalar()
+
+        by_metric.append(
+            {
+                "metric": metric_name,
+                "count": int(r[1]),
+                "last_date": r[2].isoformat() if r[2] else None,
+                "last_value": round(float(last_val), 2) if last_val is not None else None,
+                "avg_90d": round(float(r[3]), 2) if r[3] is not None else None,
+                "max_90d": round(float(r[4]), 2) if r[4] is not None else None,
+                "min_90d": round(float(r[5]), 2) if r[5] is not None else None,
+                "avg_7d": round(float(avg_7d), 2) if avg_7d is not None else None,
+                "avg_prev_7d": round(float(avg_prev_7d), 2) if avg_prev_7d is not None else None,
+                "avg_30d": round(float(avg_30d), 2) if avg_30d is not None else None,
+            }
+        )
+
     return HealthSummary(total_datapoints=total, by_metric=by_metric)
+
+
+class TimeseriesPoint(BaseModel):
+    date: date
+    value: float
+
+
+@router.get("/timeseries", response_model=list[TimeseriesPoint])
+async def metric_timeseries(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    metric: Annotated[str, Query()],
+    days: Annotated[int, Query(ge=1, le=3650)] = 90,
+) -> list[TimeseriesPoint]:
+    """Time series d'une metric pour les N derniers jours (pour charts)."""
+    cutoff = datetime.now(UTC).date() - timedelta(days=days)
+    rows = (
+        await db.execute(
+            select(HealthMetric.date, HealthMetric.value)
+            .where(HealthMetric.metric == metric, HealthMetric.date >= cutoff)
+            .order_by(HealthMetric.date)
+        )
+    ).all()
+    return [TimeseriesPoint(date=r[0], value=float(r[1])) for r in rows]
