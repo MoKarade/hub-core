@@ -27,6 +27,10 @@ DRIVE_API = "https://www.googleapis.com/drive/v3"
 class DriveSyncRequest(BaseModel):
     user_email: str = Field(default="marc.richard4@gmail.com")
     max_results: int = Field(default=2000, ge=1, le=100000)
+    only_my_files: bool = Field(
+        default=True,
+        description="Ne pull que les fichiers que tu possedes (pas les partages avec toi).",
+    )
 
 
 class DriveSyncResponse(BaseModel):
@@ -82,6 +86,19 @@ def _parse_file(f: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.delete("/wipe")
+async def wipe_drive(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+) -> dict[str, int]:
+    """Vide tous les DriveFile pour ce user (avant resync clean)."""
+    from sqlalchemy import delete as sql_delete
+
+    res = await db.execute(sql_delete(DriveFile).where(DriveFile.user_email == user_email))
+    await db.commit()
+    return {"deleted": res.rowcount or 0}
+
+
 @router.post("/sync", response_model=DriveSyncResponse)
 async def sync_drive(
     payload: DriveSyncRequest,
@@ -103,11 +120,14 @@ async def sync_drive(
         page_token: str | None = None
         fetched = 0
         while fetched < payload.max_results:
+            q_parts = ["trashed = false"]
+            if payload.only_my_files:
+                q_parts.append("'me' in owners")
             params: dict[str, Any] = {
                 "pageSize": min(1000, payload.max_results - fetched),
                 "fields": fields,
                 "orderBy": "modifiedTime desc",
-                "q": "trashed = false",
+                "q": " and ".join(q_parts),
             }
             if page_token:
                 params["pageToken"] = page_token

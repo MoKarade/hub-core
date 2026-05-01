@@ -229,6 +229,82 @@ async def toggle_task(
     )
 
 
+class TaskUpdateRequest(BaseModel):
+    user_email: str = Field(default="marc.richard4@gmail.com")
+    title: str | None = None
+    notes: str | None = None
+    due_at: datetime | None = None
+    clear_due: bool = False
+    """Si true, retire la due date (sinon None = pas de change)."""
+
+
+@router.patch("/{task_id}/update", response_model=TaskItem)
+async def update_task(
+    task_id: str,
+    payload: TaskUpdateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TaskItem:
+    """Modifie titre / notes / date d'une tache. Sync avec Google Tasks PATCH."""
+    access_token = await _resolve_token(db, payload.user_email)
+    local = (
+        await db.execute(select(TaskModel).where(TaskModel.task_id == task_id))
+    ).scalar_one_or_none()
+    if not local:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tache introuvable")
+
+    body: dict[str, Any] = {}
+    if payload.title is not None:
+        body["title"] = payload.title
+    if payload.notes is not None:
+        body["notes"] = payload.notes
+    if payload.clear_due:
+        body["due"] = None
+    elif payload.due_at:
+        body["due"] = payload.due_at.isoformat().replace("+00:00", "Z")
+
+    if not body:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Aucun champ a update")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await client.patch(
+                f"{TASKS_API}/lists/{local.tasklist_id}/tasks/{task_id}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            r.raise_for_status()
+            updated = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Google Tasks update failed: {e.response.status_code} {e.response.text[:200]}",
+            ) from e
+
+    if "title" in body:
+        local.title = updated.get("title")
+    if "notes" in body:
+        local.notes = updated.get("notes")
+    if payload.clear_due or payload.due_at:
+        local.due_at = _parse_dt(updated.get("due"))
+    local.last_modified = _parse_dt(updated.get("updated"))
+    await db.commit()
+
+    return TaskItem(
+        id=local.id,
+        task_id=local.task_id,
+        tasklist_id=local.tasklist_id,
+        tasklist_title=local.tasklist_title,
+        title=local.title,
+        notes=local.notes,
+        is_completed=local.is_completed,
+        due_at=local.due_at,
+        completed_at=local.completed_at,
+    )
+
+
 class TaskCreateRequest(BaseModel):
     user_email: str = Field(default="marc.richard4@gmail.com")
     tasklist_id: str
