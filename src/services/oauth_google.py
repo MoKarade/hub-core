@@ -313,8 +313,12 @@ async def get_valid_access_token(
     if token.is_revoked:
         raise RuntimeError(f"Token Google révoqué pour service={service}")
 
-    # Si pas expiré (avec marge 60s), on retourne directement
-    if datetime.now(UTC) < token.token_expires_at - timedelta(seconds=60):
+    # Si pas expiré (avec marge 60s), on retourne directement.
+    # SQLite stocke datetime naive : on assume UTC si tzinfo manque.
+    expires_at = token.token_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) < expires_at - timedelta(seconds=60):
         return decrypt_str(token.access_token_encrypted)
 
     # Sinon refresh
