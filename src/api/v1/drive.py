@@ -99,6 +99,40 @@ async def wipe_drive(
     return {"deleted": res.rowcount or 0}
 
 
+async def _drive_query(
+    client: httpx.AsyncClient,
+    access_token: str,
+    *,
+    q: str,
+    fields: str,
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """Helper paginate Drive files.list."""
+    out: list[dict[str, Any]] = []
+    page_token: str | None = None
+    while len(out) < max_results:
+        params: dict[str, Any] = {
+            "pageSize": min(1000, max_results - len(out)),
+            "fields": fields,
+            "orderBy": "modifiedTime desc",
+            "q": q,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        r = await client.get(
+            f"{DRIVE_API}/files",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+        )
+        r.raise_for_status()
+        data = r.json()
+        out.extend(data.get("files", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return out
+
+
 @router.post("/sync", response_model=DriveSyncResponse)
 async def sync_drive(
     payload: DriveSyncRequest,
@@ -116,61 +150,69 @@ async def sync_drive(
     updated = 0
     errors = 0
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        page_token: str | None = None
-        fetched = 0
-        while fetched < payload.max_results:
-            q_parts = ["trashed = false"]
-            if payload.only_my_files:
-                q_parts.append("'me' in owners")
-            params: dict[str, Any] = {
-                "pageSize": min(1000, payload.max_results - fetched),
-                "fields": fields,
-                "orderBy": "modifiedTime desc",
-                "q": " and ".join(q_parts),
-            }
-            if page_token:
-                params["pageToken"] = page_token
-            try:
-                r = await client.get(
-                    f"{DRIVE_API}/files",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    params=params,
-                )
-                r.raise_for_status()
-                data = r.json()
-            except httpx.HTTPStatusError as e:
-                raise HTTPException(
-                    status.HTTP_502_BAD_GATEWAY,
-                    f"Drive list failed: {e.response.status_code}",
-                ) from e
+    async def upsert_one(f: dict[str, Any]) -> None:
+        nonlocal ingested, updated, errors
+        try:
+            parsed = _parse_file(f)
+        except Exception as e:
+            logger.warning("drive_parse_failed: id=%s err=%r", f.get("id"), e)
+            errors += 1
+            return
+        existing = (
+            await db.execute(select(DriveFile).where(DriveFile.drive_id == parsed["drive_id"]))
+        ).scalar_one_or_none()
+        if existing:
+            for k, v in parsed.items():
+                setattr(existing, k, v)
+            updated += 1
+        else:
+            db.add(DriveFile(user_email=payload.user_email, **parsed))
+            ingested += 1
 
-            for f in data.get("files", []):
-                try:
-                    parsed = _parse_file(f)
-                except Exception as e:
-                    logger.warning("drive_parse_failed: id=%s err=%r", f.get("id"), e)
-                    errors += 1
-                    continue
-                existing = (
-                    await db.execute(
-                        select(DriveFile).where(DriveFile.drive_id == parsed["drive_id"])
-                    )
-                ).scalar_one_or_none()
-                if existing:
-                    for k, v in parsed.items():
-                        setattr(existing, k, v)
-                    updated += 1
-                else:
-                    db.add(DriveFile(user_email=payload.user_email, **parsed))
-                    ingested += 1
-                fetched += 1
-                if fetched >= payload.max_results:
-                    break
+    base_filter = "trashed = false"
+    if payload.only_my_files:
+        base_filter += " and 'me' in owners"
 
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # PASSE 1 : tous les FOLDERS (typiquement <2000 chez un user normal).
+        # Indispensable pour que la navigation root marche (sinon les top folders
+        # manquent quand max_results plafonne sur les fichiers recents).
+        try:
+            folders = await _drive_query(
+                client,
+                access_token,
+                q=f"{base_filter} and mimeType = 'application/vnd.google-apps.folder'",
+                fields=fields,
+                max_results=10000,
+            )
+            logger.info("drive_sync_folders fetched=%d", len(folders))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Drive folders list failed: {e.response.status_code}",
+            ) from e
+
+        for f in folders:
+            await upsert_one(f)
+
+        # PASSE 2 : les autres fichiers (max_results plafond).
+        try:
+            files = await _drive_query(
+                client,
+                access_token,
+                q=f"{base_filter} and mimeType != 'application/vnd.google-apps.folder'",
+                fields=fields,
+                max_results=payload.max_results,
+            )
+            logger.info("drive_sync_files fetched=%d", len(files))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Drive files list failed: {e.response.status_code}",
+            ) from e
+
+        for f in files:
+            await upsert_one(f)
 
         await db.commit()
 
