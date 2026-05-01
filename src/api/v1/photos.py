@@ -265,6 +265,17 @@ async def enrich_gps(
 ) -> GpsEnrichResponse:
     """Pour chaque photo SANS GPS, telecharge les bytes + parse EXIF + extrait GPS.
     Optionnellement reverse geocode pour location_name humain.
+
+    LIMITATION CONNUE : Google Photos Picker API STRIP delib les GPS tags de
+    l'EXIF pour proteger la privacy. Donc pour les photos importees via Picker,
+    cet endpoint trouvera 0 GPS systematiquement.
+
+    Solutions alternatives pour avoir le GPS :
+    - Drive API si Photos backup vers Drive est active (EXIF preserve)
+    - Library API apres app verification Google (semaines de process)
+    - Parser les copies locales sur PC (hors hub)
+
+    Ref : https://developers.google.com/photos/picker (privacy section)
     """
     import asyncio as aio
     import time
