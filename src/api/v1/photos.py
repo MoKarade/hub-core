@@ -1,11 +1,23 @@
-"""Endpoint /v1/photos - ingest Google Photos metadata (Phase 3c).
+"""Endpoint /v1/photos - ingest Google Photos via Picker API (Phase 3c).
 
-On stocke uniquement les metadonnees (date, dimensions, type) - pas les bytes.
-Les URLs base_url sont temporaires (~60min), refresh via API si besoin.
+CONTEXTE 2025 : Google a depercier photoslibrary.readonly pour les nouvelles
+apps. Les apps creees apres mars 2025 recoivent 403 sur mediaItems.list,
+meme avec scope correct. Solution officielle Google = Picker API.
 
-API : Photos Library
-- mediaItems.list (page de 100, max 25k retours apres lesquels on doit
-  utiliser nextPageToken)
+Workflow Picker :
+1. POST /v1/photos/picker/start -> cree session, retourne pickerUri
+2. User redirige vers pickerUri (UI Google), pick photos, click Done
+3. Frontend poll /v1/photos/picker/status/{session_id} jusqu'a mediaItemsSet=true
+4. POST /v1/photos/picker/import/{session_id} -> recupere les mediaItems picks
+   et stocke en DB (idempotent par media_id)
+
+Avantages :
+- Marche pour les nouvelles apps sans Google Verification
+- Free, scopes auto-approves
+- User controle exactement quoi importer (vie privee respectee)
+
+Ancien endpoint /v1/photos/sync (Library API) garde pour les apps verifiees
+mais aboutit a 403 sur les nouvelles - on log puis recommend Picker.
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/photos", tags=["photos"])
 
 PHOTOS_API = "https://photoslibrary.googleapis.com/v1"
+PICKER_API = "https://photospicker.googleapis.com/v1"
 
 
 class PhotosSyncRequest(BaseModel):
@@ -251,4 +264,194 @@ async def photos_stats(db: Annotated[AsyncSession, Depends(get_db)]) -> PhotosSt
         total_pixels=int(total_pixels),
         by_year=by_year,
         by_camera=by_camera,
+    )
+
+
+# ============================================================================
+# Picker API (solution 2025 - Library API restreinte aux apps verifiees)
+# ============================================================================
+
+
+class PickerStartResponse(BaseModel):
+    session_id: str
+    picker_uri: str
+    """URL ou rediriger l'user pour qu'il pick ses photos."""
+
+    expire_time: str | None = None
+
+
+class PickerStatusResponse(BaseModel):
+    session_id: str
+    media_items_set: bool
+    """True quand l'user a fini de picker."""
+
+    picker_uri: str | None = None
+    expire_time: str | None = None
+
+
+class PickerImportResponse(BaseModel):
+    session_id: str
+    ingested: int
+    updated: int
+    errors: int
+    duration_seconds: float
+
+
+@router.post("/picker/start", response_model=PickerStartResponse)
+async def picker_start(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+) -> PickerStartResponse:
+    """Cree une session Picker. L'user redirige vers picker_uri pour pick."""
+    access_token = await _resolve_token(db, user_email)
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await client.post(
+                f"{PICKER_API}/sessions",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Picker session create failed: {e.response.status_code} {e.response.text[:200]}",
+            ) from e
+    return PickerStartResponse(
+        session_id=data["id"],
+        picker_uri=data["pickerUri"],
+        expire_time=data.get("expireTime"),
+    )
+
+
+@router.get("/picker/status/{session_id}", response_model=PickerStatusResponse)
+async def picker_status(
+    session_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+) -> PickerStatusResponse:
+    """Poll le status d'une session : True quand user a fini de picker."""
+    access_token = await _resolve_token(db, user_email)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r = await client.get(
+                f"{PICKER_API}/sessions/{session_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Picker session get failed: {e.response.status_code}",
+            ) from e
+    return PickerStatusResponse(
+        session_id=data["id"],
+        media_items_set=bool(data.get("mediaItemsSet", False)),
+        picker_uri=data.get("pickerUri"),
+        expire_time=data.get("expireTime"),
+    )
+
+
+def _parse_picker_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Parse mediaItem retourne par Picker API (format different de Library)."""
+    media_file = item.get("mediaFile", {}) or {}
+    meta = media_file.get("mediaFileMetadata", {}) or {}
+    photo_meta = meta.get("photoMetadata", {}) or {}
+    video_meta = meta.get("videoMetadata", {}) or {}
+    is_video = "videoMetadata" in meta
+
+    creation_str = item.get("createTime") or meta.get("creationTime")
+    creation_time = (
+        datetime.fromisoformat(creation_str.replace("Z", "+00:00"))
+        if creation_str
+        else datetime.now(UTC)
+    )
+    return {
+        "media_id": item["id"],
+        "filename": media_file.get("filename"),
+        "mime_type": media_file.get("mimeType"),
+        "description": None,
+        "creation_time": creation_time,
+        "width": int(meta["width"]) if meta.get("width") else None,
+        "height": int(meta["height"]) if meta.get("height") else None,
+        "is_video": is_video,
+        "video_duration_ms": int(video_meta.get("durationMillis"))
+        if video_meta.get("durationMillis")
+        else None,
+        "camera_make": photo_meta.get("cameraMake") or video_meta.get("cameraMake"),
+        "camera_model": photo_meta.get("cameraModel") or video_meta.get("cameraModel"),
+        "base_url": media_file.get("baseUrl"),
+        "product_url": None,  # Picker n'expose pas productUrl
+    }
+
+
+@router.post("/picker/import/{session_id}", response_model=PickerImportResponse)
+async def picker_import(
+    session_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+) -> PickerImportResponse:
+    """Importe les photos selectionnees dans la session Picker.
+
+    A appeler APRES que /picker/status retourne mediaItemsSet=true.
+    """
+    start = time.monotonic()
+    access_token = await _resolve_token(db, user_email)
+
+    ingested = 0
+    updated = 0
+    errors = 0
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {"sessionId": session_id, "pageSize": 100}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                r = await client.get(
+                    f"{PICKER_API}/mediaItems",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY,
+                    f"Picker mediaItems list failed: {e.response.status_code}",
+                ) from e
+
+            for item in data.get("mediaItems", []):
+                try:
+                    parsed = _parse_picker_item(item)
+                except Exception as e:
+                    logger.warning("picker_parse_failed: id=%s err=%r", item.get("id"), e)
+                    errors += 1
+                    continue
+                existing = (
+                    await db.execute(select(Photo).where(Photo.media_id == parsed["media_id"]))
+                ).scalar_one_or_none()
+                if existing:
+                    for k, v in parsed.items():
+                        setattr(existing, k, v)
+                    updated += 1
+                else:
+                    db.add(Photo(user_email=user_email, **parsed))
+                    ingested += 1
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+        await db.commit()
+
+    return PickerImportResponse(
+        session_id=session_id,
+        ingested=ingested,
+        updated=updated,
+        errors=errors,
+        duration_seconds=round(time.monotonic() - start, 2),
     )

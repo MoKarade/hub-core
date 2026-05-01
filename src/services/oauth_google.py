@@ -50,7 +50,13 @@ GoogleService = Literal[
 # Scopes read-only par service
 SERVICE_SCOPES: dict[str, list[str]] = {
     "gmail": ["https://www.googleapis.com/auth/gmail.readonly"],
-    "photos": ["https://www.googleapis.com/auth/photoslibrary.readonly"],
+    # Photos : Google a deprecier photoslibrary.readonly en 2025 pour les nouvelles apps.
+    # On utilise la NOUVELLE Picker API (designed for new apps, marche sans verification).
+    # Le user devra picker explicitement les photos a importer (1 fois par session).
+    "photos": [
+        "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+        "https://www.googleapis.com/auth/photoslibrary.readonly",
+    ],
     "drive": ["https://www.googleapis.com/auth/drive.readonly"],
     "calendar": ["https://www.googleapis.com/auth/calendar.readonly"],
     "fitness": [
