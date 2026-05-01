@@ -52,9 +52,11 @@ GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 
 class SyncRequest(BaseModel):
     user_email: str = Field(default="marc.richard4@gmail.com")
-    max_results: int = Field(default=200, ge=1, le=2000)
-    since_days: int | None = Field(default=30, ge=1, le=3650)
-    """Si non-null : ne pull que les emails des N derniers jours (filtre 'q')."""
+    max_results: int = Field(default=500, ge=1, le=100000)
+    """Cap sur le nombre d'emails a importer en 1 sync. Mets 100000 pour ~tout."""
+
+    since_days: int | None = Field(default=None, ge=1, le=10000)
+    """Filtre : N derniers jours. None = tout l'historique disponible Gmail."""
 
 
 class SyncResponse(BaseModel):
