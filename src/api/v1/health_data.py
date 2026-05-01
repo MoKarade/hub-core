@@ -33,18 +33,32 @@ router = APIRouter(prefix="/health-data", tags=["health-data"])
 
 FIT_API = "https://www.googleapis.com/fitness/v1"
 
-# Mapping Google Fit dataTypeName -> nom de metric local
-FIT_DATA_TYPES = {
-    "com.google.step_count.delta": "steps",
-    "com.google.distance.delta": "distance_m",
-    "com.google.calories.expended": "calories",
-    "com.google.active_minutes": "active_minutes",
-    "com.google.weight": "weight_kg",
-    "com.google.heart_rate.bpm": "heart_rate_avg",
+# Mapping Google Fit dataTypeName -> (nom local, methode d'agregation)
+# avg : moyenne (heart_rate) | sum : total (steps) | last : derniere val (weight)
+FIT_DATA_TYPES: dict[str, tuple[str, str]] = {
+    "com.google.step_count.delta": ("steps", "sum"),
+    "com.google.distance.delta": ("distance_m", "sum"),
+    "com.google.calories.expended": ("calories", "sum"),
+    "com.google.active_minutes": ("active_minutes", "sum"),
+    "com.google.weight": ("weight_kg", "last"),
+    "com.google.heart_rate.bpm": ("heart_rate_avg", "avg"),
+    "com.google.heart_minutes": ("heart_minutes", "sum"),
+    "com.google.body.fat.percentage": ("body_fat_pct", "last"),
+    "com.google.oxygen_saturation": ("oxygen_saturation", "avg"),
+    "com.google.blood_pressure": ("blood_pressure_systolic", "avg"),
+    "com.google.body.temperature": ("body_temp_c", "avg"),
+    "com.google.hydration": ("hydration_l", "sum"),
+    "com.google.height": ("height_m", "last"),
+    "com.google.power.sample": ("power_w", "avg"),
+    "com.google.speed": ("speed_avg_ms", "avg"),
+    "com.google.cycling.pedaling.cadence": ("cycling_cadence_rpm", "avg"),
+    "com.google.cycling.wheel_revolution.cumulative": ("cycling_wheel_revs", "last"),
+    "com.google.activity.segment": ("activity_segments", "sum"),
 }
 
 # Sleep activityType code = 72 (Google Fit)
 SLEEP_ACTIVITY_TYPE = 72
+FIT_SESSIONS_API = "https://www.googleapis.com/fitness/v1/users/me/sessions"
 
 
 class HealthSyncRequest(BaseModel):
@@ -131,7 +145,7 @@ async def sync_health(
     errors = 0
 
     async with httpx.AsyncClient() as client:
-        for data_type, metric_name in FIT_DATA_TYPES.items():
+        for data_type, (metric_name, agg) in FIT_DATA_TYPES.items():
             try:
                 buckets = await _aggregate(client, access_token, data_type, start_ms, end_ms)
             except httpx.HTTPStatusError as e:
@@ -150,22 +164,23 @@ async def sync_health(
                     continue
                 bucket_date = datetime.fromtimestamp(bucket_start_ms / 1000, tz=UTC).date()
 
-                # Sum de tous les datapoints du jour pour ce metric
-                total = 0.0
-                point_count = 0
+                vals: list[float] = []
                 for ds in bucket.get("dataset", []):
                     for point in ds.get("point", []):
                         val = _extract_value(point, data_type)
                         if val is not None:
-                            total += val
-                            point_count += 1
+                            vals.append(val)
 
-                if point_count == 0:
+                if not vals:
                     continue
 
-                # Pour heart_rate on prefer la moyenne plutot que la somme
-                if metric_name == "heart_rate_avg":
-                    total = total / point_count
+                # Aggregation selon la strategie (sum/avg/last)
+                if agg == "avg":
+                    final = sum(vals) / len(vals)
+                elif agg == "last":
+                    final = vals[-1]
+                else:  # sum
+                    final = sum(vals)
 
                 # UPSERT par (user_email, date, metric, source)
                 existing = (
@@ -180,7 +195,7 @@ async def sync_health(
                 ).scalar_one_or_none()
 
                 if existing:
-                    existing.value = total
+                    existing.value = final
                     updated += 1
                 else:
                     db.add(
@@ -188,7 +203,7 @@ async def sync_health(
                             user_email=payload.user_email,
                             date=bucket_date,
                             metric=metric_name,
-                            value=total,
+                            value=final,
                             source="google_fit",
                         )
                     )

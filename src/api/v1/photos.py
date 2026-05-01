@@ -68,6 +68,11 @@ class PhotoItem(BaseModel):
     is_video: bool
     base_url: str | None
     product_url: str | None
+    latitude: float | None = None
+    longitude: float | None = None
+    location_name: str | None = None
+    camera_make: str | None = None
+    camera_model: str | None = None
 
 
 async def _resolve_token(db: AsyncSession, user_email: str) -> str:
@@ -208,6 +213,11 @@ async def list_photos(
             is_video=p.is_video,
             base_url=p.base_url,
             product_url=p.product_url,
+            latitude=p.latitude,
+            longitude=p.longitude,
+            location_name=p.location_name,
+            camera_make=p.camera_make,
+            camera_model=p.camera_model,
         )
         for p in rows
     ]
@@ -220,6 +230,95 @@ class PhotosStats(BaseModel):
     total_pixels: int
     by_year: list[dict[str, Any]]
     by_camera: list[dict[str, Any]]
+
+
+class GpsEnrichRequest(BaseModel):
+    user_email: str = Field(default="marc.richard4@gmail.com")
+    max_photos: int = Field(default=100, ge=1, le=10000)
+    do_geocode: bool = Field(default=True, description="Reverse geocode chaque GPS via Nominatim")
+
+
+class GpsEnrichResponse(BaseModel):
+    processed: int
+    with_gps: int
+    geocoded: int
+    errors: int
+    duration_seconds: float
+
+
+@router.post("/enrich-gps", response_model=GpsEnrichResponse)
+async def enrich_gps(
+    payload: GpsEnrichRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> GpsEnrichResponse:
+    """Pour chaque photo SANS GPS, telecharge les bytes + parse EXIF + extrait GPS.
+    Optionnellement reverse geocode pour location_name humain.
+    """
+    import asyncio as aio
+    import time
+
+    from src.services.photo_gps import (
+        download_photo_bytes,
+        extract_gps_from_bytes,
+        reverse_geocode,
+    )
+
+    start = time.monotonic()
+    access_token = await _resolve_token(db, payload.user_email)
+
+    # Photos sans lat/lng, ayant un base_url
+    rows = (
+        (
+            await db.execute(
+                select(Photo)
+                .where(
+                    Photo.user_email == payload.user_email,
+                    Photo.latitude.is_(None),
+                    Photo.base_url.isnot(None),
+                )
+                .limit(payload.max_photos)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    processed = 0
+    with_gps = 0
+    geocoded = 0
+    errors = 0
+
+    for photo in rows:
+        processed += 1
+        try:
+            bytes_data = await download_photo_bytes(photo.base_url, access_token)
+            lat, lng, alt, exif = extract_gps_from_bytes(bytes_data)
+            photo.exif_data = exif if exif else None
+            if lat is not None and lng is not None:
+                photo.latitude = lat
+                photo.longitude = lng
+                photo.altitude_m = alt
+                with_gps += 1
+                if payload.do_geocode:
+                    # Rate limit Nominatim : 1 req/sec - on attend 1.1s entre chaque
+                    name = await reverse_geocode(lat, lng)
+                    if name:
+                        photo.location_name = name
+                        geocoded += 1
+                    await aio.sleep(1.1)
+        except Exception as e:
+            logger.warning("enrich_gps_photo_failed: id=%s err=%r", photo.media_id, e)
+            errors += 1
+
+    await db.commit()
+
+    return GpsEnrichResponse(
+        processed=processed,
+        with_gps=with_gps,
+        geocoded=geocoded,
+        errors=errors,
+        duration_seconds=round(time.monotonic() - start, 2),
+    )
 
 
 @router.get("/thumb/{media_id}")

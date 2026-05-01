@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.18",
     "cryptography>=44.0.0",  # Fernet pour chiffrer les tokens OAuth en DB
     "pyjwt[crypto]>=2.10.0",  # Validation JWT Cloudflare Access (Phase 0 fin)
+    "exifread>=3.0.0",  # Extraction GPS/EXIF photos (Phase 3c+)
 ]
 
 [project.optional-dependencies]
