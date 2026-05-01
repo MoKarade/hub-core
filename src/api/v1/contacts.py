@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Contact
@@ -216,17 +216,24 @@ async def sync_contacts(
 @router.get("", response_model=list[ContactItem])
 async def list_contacts(
     db: Annotated[AsyncSession, Depends(get_db)],
-    q: Annotated[str | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    q: Annotated[str | None, Query(description="Recherche dans nom, email, phone, org")] = None,
+    sort: Annotated[str, Query(description="name|recent|family")] = "name",
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[ContactItem]:
-    stmt = select(Contact).order_by(Contact.display_name)
-    if q:
-        like = f"%{q}%"
-        stmt = stmt.where(or_(Contact.display_name.ilike(like)))
+    stmt = select(Contact)
+    if sort == "recent":
+        stmt = stmt.order_by(desc(Contact.last_modified))
+    elif sort == "family":
+        stmt = stmt.order_by(Contact.family_name, Contact.given_name)
+    else:
+        stmt = stmt.order_by(Contact.display_name)
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).scalars().all()
-    return [
+
+    # Filtre cote app : ilike sur display_name + JSON array contains pour
+    # emails/phones (SQLite ne supporte pas l'operator postgresql ANY).
+    items = [
         ContactItem(
             id=c.id,
             person_id=c.person_id,
@@ -241,6 +248,18 @@ async def list_contacts(
         )
         for c in rows
     ]
+    if q:
+        ql = q.lower()
+        items = [
+            it
+            for it in items
+            if (it.display_name and ql in it.display_name.lower())
+            or any(ql in e.lower() for e in it.emails)
+            or any(ql in p.lower() for p in it.phones)
+            or any(ql in o.lower() for o in it.organizations)
+            or ql in it.person_id.lower()
+        ]
+    return items
 
 
 class ContactsStats(BaseModel):

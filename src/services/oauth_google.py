@@ -66,7 +66,8 @@ SERVICE_SCOPES: dict[str, list[str]] = {
         "https://www.googleapis.com/auth/fitness.location.read",
     ],
     "people": ["https://www.googleapis.com/auth/contacts.readonly"],
-    "tasks": ["https://www.googleapis.com/auth/tasks.readonly"],
+    # Tasks : full scope (read+write) pour permettre CRUD
+    "tasks": ["https://www.googleapis.com/auth/tasks"],
     "youtube": ["https://www.googleapis.com/auth/youtube.readonly"],
 }
 

@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import DriveFile
@@ -162,19 +162,33 @@ async def sync_drive(
     )
 
 
-@router.get("/files", response_model=list[DriveFileItem])
+class DriveFileFull(DriveFileItem):
+    """Detail enrichi pour la navigation folder."""
+
+    parents: str | None = None
+    """IDs parents separes par virgule (text serialise)."""
+
+
+@router.get("/files", response_model=list[DriveFileFull])
 async def list_files(
     db: Annotated[AsyncSession, Depends(get_db)],
     mime_type: Annotated[str | None, Query()] = None,
     q: Annotated[str | None, Query()] = None,
     starred: Annotated[bool | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    parent_id: Annotated[
+        str | None, Query(description="ID Drive du parent. 'root' = racine.")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[DriveFileItem]:
+) -> list[DriveFileFull]:
     stmt = (
         select(DriveFile)
         .where(DriveFile.trashed.is_(False))
-        .order_by(desc(DriveFile.modified_time))
+        .order_by(
+            # Folders d'abord (puis files)
+            desc(DriveFile.mime_type == "application/vnd.google-apps.folder"),
+            desc(DriveFile.modified_time),
+        )
     )
     if mime_type:
         stmt = stmt.where(DriveFile.mime_type == mime_type)
@@ -182,10 +196,26 @@ async def list_files(
         stmt = stmt.where(DriveFile.name.ilike(f"%{q}%"))
     if starred is not None:
         stmt = stmt.where(DriveFile.starred == starred)
+    if parent_id is not None:
+        # Match : parents contient l'ID (CSV)
+        if parent_id == "root":
+            # Racine = pas de parent OU parent inconnu (orphelins)
+            # On ne peut pas vraiment savoir le rootFolderId sans appel API,
+            # donc on liste tout pour l'instant
+            pass
+        else:
+            stmt = stmt.where(
+                or_(
+                    DriveFile.parents == parent_id,
+                    DriveFile.parents.like(f"{parent_id},%"),
+                    DriveFile.parents.like(f"%,{parent_id},%"),
+                    DriveFile.parents.like(f"%,{parent_id}"),
+                )
+            )
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).scalars().all()
     return [
-        DriveFileItem(
+        DriveFileFull(
             id=f.id,
             drive_id=f.drive_id,
             name=f.name,
@@ -196,9 +226,35 @@ async def list_files(
             owner_email=f.owner_email,
             modified_time=f.modified_time,
             web_view_link=f.web_view_link,
+            parents=f.parents,
         )
         for f in rows
     ]
+
+
+@router.get("/file/{drive_id}", response_model=DriveFileFull)
+async def get_file_detail(
+    drive_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DriveFileFull:
+    f = (
+        await db.execute(select(DriveFile).where(DriveFile.drive_id == drive_id))
+    ).scalar_one_or_none()
+    if not f:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Fichier introuvable")
+    return DriveFileFull(
+        id=f.id,
+        drive_id=f.drive_id,
+        name=f.name,
+        mime_type=f.mime_type,
+        size_bytes=f.size_bytes,
+        starred=f.starred,
+        is_shared=f.is_shared,
+        owner_email=f.owner_email,
+        modified_time=f.modified_time,
+        web_view_link=f.web_view_link,
+        parents=f.parents,
+    )
 
 
 class DriveStats(BaseModel):

@@ -166,6 +166,199 @@ async def sync_tasks(
     )
 
 
+class TaskToggleRequest(BaseModel):
+    user_email: str = Field(default="marc.richard4@gmail.com")
+    completed: bool
+
+
+@router.post("/{task_id}/toggle", response_model=TaskItem)
+async def toggle_task(
+    task_id: str,
+    payload: TaskToggleRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TaskItem:
+    """Toggle complete/incomplete d'une tache. Sync avec Google Tasks API."""
+    access_token = await _resolve_token(db, payload.user_email)
+
+    # Recupere la tache locale pour avoir le tasklist_id
+    local = (
+        await db.execute(select(TaskModel).where(TaskModel.task_id == task_id))
+    ).scalar_one_or_none()
+    if not local:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tache introuvable")
+
+    # PATCH Google Tasks
+    body = {"status": "completed" if payload.completed else "needsAction"}
+    if not payload.completed:
+        body["completed"] = None  # type: ignore
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await client.patch(
+                f"{TASKS_API}/lists/{local.tasklist_id}/tasks/{task_id}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            r.raise_for_status()
+            updated = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Google Tasks toggle failed: {e.response.status_code} {e.response.text[:200]}",
+            ) from e
+
+    # Update DB
+    local.is_completed = payload.completed
+    local.completed_at = _parse_dt(updated.get("completed"))
+    local.last_modified = _parse_dt(updated.get("updated"))
+    await db.commit()
+
+    return TaskItem(
+        id=local.id,
+        task_id=local.task_id,
+        tasklist_id=local.tasklist_id,
+        tasklist_title=local.tasklist_title,
+        title=local.title,
+        notes=local.notes,
+        is_completed=local.is_completed,
+        due_at=local.due_at,
+        completed_at=local.completed_at,
+    )
+
+
+class TaskCreateRequest(BaseModel):
+    user_email: str = Field(default="marc.richard4@gmail.com")
+    tasklist_id: str
+    title: str = Field(..., min_length=1, max_length=500)
+    notes: str | None = None
+    due_at: datetime | None = None
+
+
+@router.post("/create", response_model=TaskItem)
+async def create_task(
+    payload: TaskCreateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TaskItem:
+    """Cree une nouvelle tache. Sync avec Google Tasks API."""
+    access_token = await _resolve_token(db, payload.user_email)
+    body: dict[str, Any] = {"title": payload.title}
+    if payload.notes:
+        body["notes"] = payload.notes
+    if payload.due_at:
+        body["due"] = payload.due_at.isoformat().replace("+00:00", "Z")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await client.post(
+                f"{TASKS_API}/lists/{payload.tasklist_id}/tasks",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            r.raise_for_status()
+            created = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Google Tasks create failed: {e.response.status_code}",
+            ) from e
+
+    # Recupere le titre de la tasklist
+    tl_title = (
+        await db.execute(
+            select(TaskModel.tasklist_title)
+            .where(TaskModel.tasklist_id == payload.tasklist_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    new_local = TaskModel(
+        user_email=payload.user_email,
+        task_id=created["id"],
+        tasklist_id=payload.tasklist_id,
+        tasklist_title=tl_title,
+        title=created.get("title"),
+        notes=created.get("notes"),
+        is_completed=created.get("status") == "completed",
+        due_at=_parse_dt(created.get("due")),
+        completed_at=_parse_dt(created.get("completed")),
+        last_modified=_parse_dt(created.get("updated")),
+    )
+    db.add(new_local)
+    await db.commit()
+    await db.refresh(new_local)
+
+    return TaskItem(
+        id=new_local.id,
+        task_id=new_local.task_id,
+        tasklist_id=new_local.tasklist_id,
+        tasklist_title=new_local.tasklist_title,
+        title=new_local.title,
+        notes=new_local.notes,
+        is_completed=new_local.is_completed,
+        due_at=new_local.due_at,
+        completed_at=new_local.completed_at,
+    )
+
+
+@router.delete("/{task_id}")
+async def delete_task(
+    task_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+) -> dict[str, str]:
+    """Supprime une tache. Sync avec Google Tasks API."""
+    access_token = await _resolve_token(db, user_email)
+    local = (
+        await db.execute(select(TaskModel).where(TaskModel.task_id == task_id))
+    ).scalar_one_or_none()
+    if not local:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tache introuvable")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await client.delete(
+                f"{TASKS_API}/lists/{local.tasklist_id}/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Google Tasks delete failed: {e.response.status_code}",
+            ) from e
+
+    await db.delete(local)
+    await db.commit()
+    return {"deleted": task_id}
+
+
+class TasklistInfo(BaseModel):
+    id: str
+    title: str | None
+    count: int
+
+
+@router.get("/lists", response_model=list[TasklistInfo])
+async def list_tasklists(db: Annotated[AsyncSession, Depends(get_db)]) -> list[TasklistInfo]:
+    """Liste les tasklists disponibles (depuis DB locale)."""
+    rows = (
+        await db.execute(
+            select(
+                TaskModel.tasklist_id,
+                TaskModel.tasklist_title,
+                func.count(TaskModel.id).label("count"),
+            ).group_by(TaskModel.tasklist_id, TaskModel.tasklist_title)
+        )
+    ).all()
+    return [TasklistInfo(id=r[0], title=r[1], count=int(r[2])) for r in rows]
+
+
 @router.get("", response_model=list[TaskItem])
 async def list_tasks(
     db: Annotated[AsyncSession, Depends(get_db)],
