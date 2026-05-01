@@ -37,11 +37,16 @@ def _dms_to_decimal(dms: list[Any], ref: str) -> float | None:
         return None
 
 
-async def download_photo_bytes(base_url: str, access_token: str, max_dim: int = 1024) -> bytes:
-    """Telecharge la photo depuis Picker baseUrl avec auth.
-    max_dim : taille max d'un cote (1024 = ~quart-HD pour parser EXIF, suffisant)."""
-    url = f"{base_url}=w{max_dim}-h{max_dim}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
+async def download_photo_bytes(base_url: str, access_token: str) -> bytes:
+    """Telecharge la photo originale (avec EXIF intact) depuis Picker baseUrl.
+
+    IMPORTANT : utilise =d (download original) plutot que =wXXX-hYYY (resize).
+    Google strip l'EXIF lors du resize cote serveur, donc le GPS serait perdu.
+    Le tradeoff : photos peuvent peser 5-15MB chacune, mais c'est le seul moyen
+    de recuperer les coords.
+    """
+    url = f"{base_url}=d"
+    async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
         r.raise_for_status()
         return r.content
