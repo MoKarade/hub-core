@@ -148,16 +148,28 @@ async def sync_photos(
                 ) from e
 
             items = data.get("mediaItems", [])
+            # Parse tous les items, puis batch-fetch existants en 1 query (vs N+1)
+            parsed_list: list[dict[str, Any]] = []
             for item in items:
                 try:
-                    parsed = _parse_photo(item)
+                    parsed_list.append(_parse_photo(item))
                 except Exception as e:
                     logger.warning("photo_parse_failed: id=%s err=%r", item.get("id"), e)
                     errors += 1
-                    continue
-                existing = (
-                    await db.execute(select(Photo).where(Photo.media_id == parsed["media_id"]))
-                ).scalar_one_or_none()
+            if not parsed_list:
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+                continue
+
+            ids = [p["media_id"] for p in parsed_list]
+            existing_rows = (
+                (await db.execute(select(Photo).where(Photo.media_id.in_(ids)))).scalars().all()
+            )
+            existing_map = {p.media_id: p for p in existing_rows}
+
+            for parsed in parsed_list:
+                existing = existing_map.get(parsed["media_id"])
                 if existing:
                     for k, v in parsed.items():
                         setattr(existing, k, v)
@@ -559,23 +571,30 @@ async def picker_import(
                     f"Picker mediaItems list failed: {e.response.status_code}",
                 ) from e
 
+            # Parse tous les items, puis batch-fetch existants en 1 query (vs N+1)
+            parsed_list: list[dict[str, Any]] = []
             for item in data.get("mediaItems", []):
                 try:
-                    parsed = _parse_picker_item(item)
+                    parsed_list.append(_parse_picker_item(item))
                 except Exception as e:
                     logger.warning("picker_parse_failed: id=%s err=%r", item.get("id"), e)
                     errors += 1
-                    continue
-                existing = (
-                    await db.execute(select(Photo).where(Photo.media_id == parsed["media_id"]))
-                ).scalar_one_or_none()
-                if existing:
-                    for k, v in parsed.items():
-                        setattr(existing, k, v)
-                    updated += 1
-                else:
-                    db.add(Photo(user_email=user_email, **parsed))
-                    ingested += 1
+
+            if parsed_list:
+                ids = [p["media_id"] for p in parsed_list]
+                existing_rows = (
+                    (await db.execute(select(Photo).where(Photo.media_id.in_(ids)))).scalars().all()
+                )
+                existing_map = {p.media_id: p for p in existing_rows}
+                for parsed in parsed_list:
+                    existing = existing_map.get(parsed["media_id"])
+                    if existing:
+                        for k, v in parsed.items():
+                            setattr(existing, k, v)
+                        updated += 1
+                    else:
+                        db.add(Photo(user_email=user_email, **parsed))
+                        ingested += 1
 
             page_token = data.get("nextPageToken")
             if not page_token:

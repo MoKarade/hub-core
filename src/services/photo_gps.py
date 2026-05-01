@@ -106,7 +106,8 @@ async def reverse_geocode(lat: float, lng: float) -> str | None:
                     "zoom": 14,  # quartier/village
                     "accept-language": "fr",
                 },
-                headers={"User-Agent": "PersonalDataHub/1.0 (marc.richard4@gmail.com)"},
+                # User-Agent generique - ne pas leak l'email perso au serveur public OSM
+                headers={"User-Agent": "PersonalDataHub/1.0"},
             )
             r.raise_for_status()
             data = r.json()
