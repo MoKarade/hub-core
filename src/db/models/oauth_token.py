@@ -37,10 +37,10 @@ class OAuthToken(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
 
     # Identite du token
-    provider: Mapped[str] = mapped_column(String(50))
+    provider: Mapped[str] = mapped_column(String(50), index=True)
     """OAuth provider : 'google', 'strava', 'github', etc."""
 
-    service: Mapped[str] = mapped_column(String(50))
+    service: Mapped[str] = mapped_column(String(50), index=True)
     """Service spécifique du provider : 'gmail', 'photos', 'drive', 'calendar',
     'fitness', 'people', 'tasks', 'youtube', ou 'all' si scope unifié."""
 
