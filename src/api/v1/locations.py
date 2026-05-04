@@ -876,3 +876,403 @@ async def patch_visit(
     await db.commit()
     await db.refresh(visit)
     return visit
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — explorer (place-stats, day, trips, geocode)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PlaceStatsResponse(BaseModel):
+    total_visits: int
+    total_duration_minutes: int
+    first_visit: datetime | None
+    last_visit: datetime | None
+    semantic_type_breakdown: dict[str, int]
+    avg_duration_minutes: float
+    visits: list[LocationVisitRead]  # max 50 most recent
+
+
+@router.get(
+    "/place-stats",
+    response_model=PlaceStatsResponse,
+    summary="Statistiques des visites pres d'un point (count + frequence + dates)",
+)
+async def get_place_stats(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    radius_m: float = Query(default=100, ge=10, le=10000),
+) -> PlaceStatsResponse:
+    min_lat, max_lat, min_lng, max_lng = _bbox(lat, lng, radius_m)
+
+    rows = (
+        await db.execute(
+            select(LocationVisit)
+            .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
+            .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
+            .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
+            .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
+            .order_by(LocationVisit.start_time.desc())
+            .limit(500)
+        )
+    ).scalars().all()
+
+    visits_list = list(rows)
+    if not visits_list:
+        return PlaceStatsResponse(
+            total_visits=0, total_duration_minutes=0,
+            first_visit=None, last_visit=None,
+            semantic_type_breakdown={}, avg_duration_minutes=0,
+            visits=[],
+        )
+
+    durations_sec = [
+        max(0, (v.end_time - v.start_time).total_seconds()) for v in visits_list
+    ]
+    total_min = sum(durations_sec) / 60
+    avg_min = total_min / len(visits_list) if visits_list else 0
+
+    type_counts: dict[str, int] = {}
+    for v in visits_list:
+        key = v.semantic_type or "UNKNOWN"
+        type_counts[key] = type_counts.get(key, 0) + 1
+
+    return PlaceStatsResponse(
+        total_visits=len(visits_list),
+        total_duration_minutes=int(total_min),
+        first_visit=min(v.start_time for v in visits_list),
+        last_visit=max(v.start_time for v in visits_list),
+        semantic_type_breakdown=type_counts,
+        avg_duration_minutes=round(avg_min, 1),
+        visits=visits_list[:50],
+    )
+
+
+class LocationActivityRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    start_time: datetime
+    end_time: datetime
+    activity_type: str | None
+    distance_meters: float | None
+    probability: float | None
+    start_lat: Decimal | None
+    start_lng: Decimal | None
+    end_lat: Decimal | None
+    end_lng: Decimal | None
+
+
+class DaySummary(BaseModel):
+    date: str
+    visits_count: int
+    activities_count: int
+    points_count: int
+    total_distance_km: float
+    total_duration_minutes: int
+    semantic_type_breakdown: dict[str, int]
+    activity_breakdown: dict[str, dict[str, float]]
+
+
+class DayResponse(BaseModel):
+    summary: DaySummary
+    visits: list[LocationVisitRead]
+    activities: list[LocationActivityRead]
+    points: list[LocationPointRead]
+
+
+@router.get(
+    "/day",
+    response_model=DayResponse,
+    summary="Tout ce qui s'est passe une journee precise (visites + activites + path)",
+)
+async def get_day(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    target_date: date = Query(..., alias="date"),
+) -> DayResponse:
+    start_dt = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC)
+    end_dt = datetime.combine(target_date, datetime.max.time(), tzinfo=UTC)
+
+    visits = list((
+        await db.execute(
+            select(LocationVisit)
+            .where(LocationVisit.start_time >= start_dt)
+            .where(LocationVisit.start_time <= end_dt)
+            .order_by(LocationVisit.start_time)
+        )
+    ).scalars().all())
+
+    activities = list((
+        await db.execute(
+            select(LocationActivity)
+            .where(LocationActivity.start_time >= start_dt)
+            .where(LocationActivity.start_time <= end_dt)
+            .order_by(LocationActivity.start_time)
+        )
+    ).scalars().all())
+
+    points = list((
+        await db.execute(
+            select(LocationPoint)
+            .where(LocationPoint.timestamp_utc >= start_dt)
+            .where(LocationPoint.timestamp_utc <= end_dt)
+            .where(LocationPoint.source == "google_timeline")
+            .order_by(LocationPoint.timestamp_utc)
+            .limit(2000)
+        )
+    ).scalars().all())
+
+    # Aggregations
+    type_counts: dict[str, int] = {}
+    for v in visits:
+        key = v.semantic_type or "UNKNOWN"
+        type_counts[key] = type_counts.get(key, 0) + 1
+
+    act_breakdown: dict[str, dict[str, float]] = {}
+    total_dist_m = 0.0
+    total_dur_s = 0.0
+    for a in activities:
+        key = a.activity_type or "UNKNOWN_ACTIVITY_TYPE"
+        existing = act_breakdown.setdefault(key, {"count": 0, "distance_km": 0, "minutes": 0})
+        existing["count"] += 1
+        if a.distance_meters:
+            existing["distance_km"] += round(a.distance_meters / 1000, 2)
+            total_dist_m += a.distance_meters
+        dur_s = max(0, (a.end_time - a.start_time).total_seconds())
+        existing["minutes"] += round(dur_s / 60, 1)
+        total_dur_s += dur_s
+
+    summary = DaySummary(
+        date=target_date.isoformat(),
+        visits_count=len(visits),
+        activities_count=len(activities),
+        points_count=len(points),
+        total_distance_km=round(total_dist_m / 1000, 2),
+        total_duration_minutes=int(total_dur_s / 60),
+        semantic_type_breakdown=type_counts,
+        activity_breakdown=act_breakdown,
+    )
+
+    return DayResponse(summary=summary, visits=visits, activities=activities, points=points)
+
+
+class Trip(BaseModel):
+    start_date: str
+    end_date: str
+    duration_days: int
+    visit_count: int
+    activity_count: int
+    total_distance_km: float
+    max_distance_from_home_km: float
+    destinations: list[dict[str, Any]]  # top 5 lieux visites
+
+
+class TripsResponse(BaseModel):
+    home_lat: float
+    home_lng: float
+    home_radius_km: float
+    min_duration_hours: int
+    trips: list[Trip]
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Distance haversine en km entre 2 points lat/lng."""
+    import math
+    R = 6371
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+@router.get(
+    "/trips",
+    response_model=TripsResponse,
+    summary="Voyages auto-detectes (periodes loin du domicile pendant >X heures)",
+)
+async def get_trips(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    home_lat: float | None = Query(default=None, description="Lat domicile (sinon centroid HOME)"),
+    home_lng: float | None = Query(default=None, description="Lng domicile (sinon centroid HOME)"),
+    home_radius_km: float = Query(default=50, ge=1, le=500, description="Rayon home en km"),
+    min_duration_hours: int = Query(default=24, ge=6, le=720, description="Duree minimum d'un voyage"),
+    min_distance_km: float = Query(default=100, ge=10, le=10000, description="Distance min depuis home"),
+) -> TripsResponse:
+    # 1. Determine home reference si pas fourni
+    if home_lat is None or home_lng is None:
+        home_visits = list((
+            await db.execute(
+                select(LocationVisit.lat, LocationVisit.lng)
+                .where(LocationVisit.semantic_type == "HOME")
+                .limit(1000)
+            )
+        ).all())
+        if not home_visits:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Aucune visite HOME — fournis home_lat/home_lng en params ou utilise /retag",
+            )
+        # Centroid
+        h_lat = sum(float(r.lat) for r in home_visits) / len(home_visits)
+        h_lng = sum(float(r.lng) for r in home_visits) / len(home_visits)
+    else:
+        h_lat, h_lng = home_lat, home_lng
+
+    # 2. Toutes les visites chronologiquement
+    visits = list((
+        await db.execute(
+            select(LocationVisit).order_by(LocationVisit.start_time)
+        )
+    ).scalars().all())
+
+    if not visits:
+        return TripsResponse(home_lat=h_lat, home_lng=h_lng, home_radius_km=home_radius_km,
+                             min_duration_hours=min_duration_hours, trips=[])
+
+    # 3. Pour chaque visite, calcule distance au home + flag "away"
+    enriched = []
+    for v in visits:
+        dist = _haversine_km(h_lat, h_lng, float(v.lat), float(v.lng))
+        away = dist > home_radius_km
+        enriched.append((v, dist, away))
+
+    # 4. Group consecutive "away" visits → trip candidates
+    trips_raw: list[list[tuple[LocationVisit, float, bool]]] = []
+    current: list[tuple[LocationVisit, float, bool]] = []
+    for v, dist, away in enriched:
+        if away:
+            current.append((v, dist, away))
+        else:
+            if current:
+                trips_raw.append(current)
+                current = []
+    if current:
+        trips_raw.append(current)
+
+    # 5. Filtre par duree min + distance min, calcule stats
+    final_trips: list[Trip] = []
+    for grp in trips_raw:
+        first = grp[0][0]
+        last = grp[-1][0]
+        duration_h = (last.end_time - first.start_time).total_seconds() / 3600
+        max_dist = max(d for _, d, _ in grp)
+
+        if duration_h < min_duration_hours or max_dist < min_distance_km:
+            continue
+
+        # Top destinations (count par place_id ou cluster)
+        dest_count: dict[str, dict[str, Any]] = {}
+        for v, d, _ in grp:
+            key = v.place_id or f"{round(float(v.lat), 3)},{round(float(v.lng), 3)}"
+            existing = dest_count.setdefault(key, {
+                "lat": float(v.lat), "lng": float(v.lng),
+                "semantic_type": v.semantic_type, "count": 0,
+                "distance_km": round(d, 1),
+            })
+            existing["count"] += 1
+        top_dests = sorted(dest_count.values(), key=lambda x: -x["count"])[:5]
+
+        # Activities pendant la periode → distance totale
+        acts = list((
+            await db.execute(
+                select(LocationActivity.distance_meters)
+                .where(LocationActivity.start_time >= first.start_time)
+                .where(LocationActivity.end_time <= last.end_time)
+            )
+        ).scalars().all())
+        total_dist_km = round(sum((d or 0) for d in acts) / 1000, 1)
+
+        final_trips.append(Trip(
+            start_date=first.start_time.date().isoformat(),
+            end_date=last.end_time.date().isoformat(),
+            duration_days=max(1, int(duration_h / 24)),
+            visit_count=len(grp),
+            activity_count=len(acts),
+            total_distance_km=total_dist_km,
+            max_distance_from_home_km=round(max_dist, 1),
+            destinations=top_dests,
+        ))
+
+    final_trips.sort(key=lambda t: t.start_date, reverse=True)
+
+    return TripsResponse(
+        home_lat=h_lat, home_lng=h_lng, home_radius_km=home_radius_km,
+        min_duration_hours=min_duration_hours, trips=final_trips,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reverse geocoding (Nominatim avec cache memoire)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_GEOCODE_CACHE: dict[tuple[float, float], dict] = {}
+_GEOCODE_LAST_REQUEST = [0.0]  # rate limit Nominatim 1 req/s
+
+
+class ReverseGeocodeResponse(BaseModel):
+    lat: float
+    lng: float
+    address: str | None
+    house_number: str | None
+    road: str | None
+    city: str | None
+    state: str | None
+    country: str | None
+    postcode: str | None
+    cached: bool
+
+
+@router.get(
+    "/reverse-geocode",
+    response_model=ReverseGeocodeResponse,
+    summary="Reverse geocode lat/lng -> adresse via OpenStreetMap Nominatim (cache memoire)",
+)
+async def reverse_geocode(
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+) -> ReverseGeocodeResponse:
+    import asyncio
+    import time
+    import httpx
+
+    key = (round(lat, 4), round(lng, 4))  # ~11m precision
+    if key in _GEOCODE_CACHE:
+        cached = _GEOCODE_CACHE[key]
+        return ReverseGeocodeResponse(lat=lat, lng=lng, cached=True, **cached)
+
+    # Rate limit Nominatim policy : 1 req/s max
+    elapsed = time.time() - _GEOCODE_LAST_REQUEST[0]
+    if elapsed < 1.1:
+        await asyncio.sleep(1.1 - elapsed)
+    _GEOCODE_LAST_REQUEST[0] = time.time()
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            r = await client.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": lat, "lon": lng, "format": "jsonv2",
+                        "accept-language": "fr,en"},
+                headers={"User-Agent": "PersonalDataHub/1.0 (private use, marc.richard4@gmail.com)"},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("nominatim_error", error=str(exc)[:100])
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Nominatim error: {exc}") from exc
+
+    addr = data.get("address", {})
+    result = {
+        "address": data.get("display_name"),
+        "house_number": addr.get("house_number"),
+        "road": addr.get("road"),
+        "city": addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality"),
+        "state": addr.get("state") or addr.get("province"),
+        "country": addr.get("country"),
+        "postcode": addr.get("postcode"),
+    }
+    _GEOCODE_CACHE[key] = result
+
+    return ReverseGeocodeResponse(lat=lat, lng=lng, cached=False, **result)
