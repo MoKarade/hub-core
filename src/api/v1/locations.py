@@ -26,7 +26,8 @@ import sqlalchemy as sa
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, inspect, select, update as sa_update
+from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.events import broadcast
@@ -108,6 +109,7 @@ def _dedup(*parts: str) -> str:
 # Parsers par format
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _parse_old_format(data: dict, source_file: str) -> dict[str, list[dict]]:
     """Format historique : {"locations": [{latitudeE7, longitudeE7, ...}]}"""
     points: list[dict] = []
@@ -124,26 +126,28 @@ def _parse_old_format(data: dict, source_file: str) -> dict[str, list[dict]]:
             accuracy = loc.get("accuracy")
             # Activite principale
             act_type = None
-            for grp in (loc.get("activity") or loc.get("activitys") or []):
+            for grp in loc.get("activity") or loc.get("activitys") or []:
                 items = grp.get("activity", [])
                 if items:
                     best = max(items, key=lambda x: x.get("confidence", 0))
                     act_type = str(best.get("type", "")).lower() or None
                     break
             dh = _dedup("path", ts.isoformat(), str(lat_e7), str(lng_e7))
-            points.append({
-                "timestamp_utc": ts,
-                "latitude": lat,
-                "longitude": lng,
-                "latitude_e7": lat_e7,
-                "longitude_e7": lng_e7,
-                "accuracy_m": int(accuracy) if accuracy is not None else None,
-                "altitude_m": int(loc["altitude"]) if "altitude" in loc else None,
-                "activity_type": act_type,
-                "source": "google_timeline",
-                "source_file": source_file,
-                "dedup_hash": dh,
-            })
+            points.append(
+                {
+                    "timestamp_utc": ts,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "latitude_e7": lat_e7,
+                    "longitude_e7": lng_e7,
+                    "accuracy_m": int(accuracy) if accuracy is not None else None,
+                    "altitude_m": int(loc["altitude"]) if "altitude" in loc else None,
+                    "activity_type": act_type,
+                    "source": "google_timeline",
+                    "source_file": source_file,
+                    "dedup_hash": dh,
+                }
+            )
         except Exception as exc:
             logger.debug("old_format_skip", error=str(exc)[:80])
     return {"visits": [], "points": points, "activities": []}
@@ -170,20 +174,22 @@ def _parse_semantic_format(data: dict, source_file: str) -> dict[str, list[dict]
                     continue
                 lat, lng, lat_e7, lng_e7 = _parse_latlng(loc_str)
                 dh = _dedup("visit", start.isoformat(), str(lat_e7), str(lng_e7))
-                visits.append({
-                    "start_time": start,
-                    "end_time": end,
-                    "tz_offset_minutes": tz_off,
-                    "lat": lat,
-                    "lng": lng,
-                    "lat_e7": lat_e7,
-                    "lng_e7": lng_e7,
-                    "place_id": cand.get("placeId"),
-                    "semantic_type": cand.get("semanticType"),
-                    "probability": cand.get("probability"),
-                    "source": "google_timeline",
-                    "dedup_hash": dh,
-                })
+                visits.append(
+                    {
+                        "start_time": start,
+                        "end_time": end,
+                        "tz_offset_minutes": tz_off,
+                        "lat": lat,
+                        "lng": lng,
+                        "lat_e7": lat_e7,
+                        "lng_e7": lng_e7,
+                        "place_id": cand.get("placeId"),
+                        "semantic_type": cand.get("semanticType"),
+                        "probability": cand.get("probability"),
+                        "source": "google_timeline",
+                        "dedup_hash": dh,
+                    }
+                )
 
             # ── PATH ─────────────────────────────────────────────────────────
             elif "timelinePath" in seg:
@@ -192,19 +198,21 @@ def _parse_semantic_format(data: dict, source_file: str) -> dict[str, list[dict]
                         lat, lng, lat_e7, lng_e7 = _parse_latlng(pt["point"])
                         ts = _parse_ts(pt["time"])
                         dh = _dedup("path", ts.isoformat(), str(lat_e7), str(lng_e7))
-                        points.append({
-                            "timestamp_utc": ts,
-                            "latitude": lat,
-                            "longitude": lng,
-                            "latitude_e7": lat_e7,
-                            "longitude_e7": lng_e7,
-                            "accuracy_m": None,
-                            "altitude_m": None,
-                            "activity_type": None,
-                            "source": "google_timeline",
-                            "source_file": source_file,
-                            "dedup_hash": dh,
-                        })
+                        points.append(
+                            {
+                                "timestamp_utc": ts,
+                                "latitude": lat,
+                                "longitude": lng,
+                                "latitude_e7": lat_e7,
+                                "longitude_e7": lng_e7,
+                                "accuracy_m": None,
+                                "altitude_m": None,
+                                "activity_type": None,
+                                "source": "google_timeline",
+                                "source_file": source_file,
+                                "dedup_hash": dh,
+                            }
+                        )
                     except Exception as exc:
                         logger.debug("path_point_skip", error=str(exc)[:80])
 
@@ -213,12 +221,12 @@ def _parse_semantic_format(data: dict, source_file: str) -> dict[str, list[dict]
                 act = seg["activity"]
                 cand = act.get("topCandidate", {})
                 s_lat = s_lng = e_lat = e_lng = None
-                if (sl := act.get("start", {}).get("latLng")):
+                if sl := act.get("start", {}).get("latLng"):
                     try:
                         s_lat, s_lng, _, _ = _parse_latlng(sl)
                     except Exception:
                         pass
-                if (el := act.get("end", {}).get("latLng")):
+                if el := act.get("end", {}).get("latLng"):
                     try:
                         e_lat, e_lng, _, _ = _parse_latlng(el)
                     except Exception:
@@ -229,20 +237,22 @@ def _parse_semantic_format(data: dict, source_file: str) -> dict[str, list[dict]
                     cand.get("type", ""),
                     str(act.get("distanceMeters", "")),
                 )
-                activities.append({
-                    "start_time": start,
-                    "end_time": end,
-                    "tz_offset_minutes": tz_off,
-                    "activity_type": cand.get("type"),
-                    "distance_meters": act.get("distanceMeters"),
-                    "probability": cand.get("probability"),
-                    "start_lat": s_lat,
-                    "start_lng": s_lng,
-                    "end_lat": e_lat,
-                    "end_lng": e_lng,
-                    "source": "google_timeline",
-                    "dedup_hash": dh,
-                })
+                activities.append(
+                    {
+                        "start_time": start,
+                        "end_time": end,
+                        "tz_offset_minutes": tz_off,
+                        "activity_type": cand.get("type"),
+                        "distance_meters": act.get("distanceMeters"),
+                        "probability": cand.get("probability"),
+                        "start_lat": s_lat,
+                        "start_lng": s_lng,
+                        "end_lat": e_lat,
+                        "end_lng": e_lng,
+                        "source": "google_timeline",
+                        "dedup_hash": dh,
+                    }
+                )
         except Exception as exc:
             logger.debug("segment_skip", error=str(exc)[:100])
 
@@ -274,7 +284,7 @@ async def _is_sqlite(db: AsyncSession) -> bool:
 
 
 async def _upsert_ignore(db: AsyncSession, model: Any, rows: list[dict]) -> tuple[int, int]:
-    """INSERT OR IGNORE (SQLite) / INSERT ON CONFLICT DO NOTHING (PG). Retourne (inserted, skipped)."""
+    """INSERT OR IGNORE (SQLite) / ON CONFLICT DO NOTHING (PG) — retourne (ins, skip)."""
     if not rows:
         return 0, 0
 
@@ -289,6 +299,7 @@ async def _upsert_ignore(db: AsyncSession, model: Any, rows: list[dict]) -> tupl
             stmt = sa_insert(model).prefix_with("OR IGNORE").values(batch)
         else:
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+
             stmt = pg_insert(model).values(batch).on_conflict_do_nothing()
 
         result = await db.execute(stmt)
@@ -443,7 +454,9 @@ async def list_location_points(
     if end:
         q = q.where(LocationPoint.timestamp_utc <= end)
     if start_date:
-        q = q.where(LocationPoint.timestamp_utc >= datetime.combine(start_date, datetime.min.time()))
+        q = q.where(
+            LocationPoint.timestamp_utc >= datetime.combine(start_date, datetime.min.time())
+        )
     if end_date:
         q = q.where(LocationPoint.timestamp_utc <= datetime.combine(end_date, datetime.max.time()))
     if min_lat is not None:
@@ -486,7 +499,9 @@ async def list_visits(
     db: Annotated[AsyncSession, Depends(get_db)],
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    semantic_type: str | None = Query(default=None, description="HOME, WORK, SEARCHED_ADDRESS, etc."),
+    semantic_type: str | None = Query(
+        default=None, description="HOME, WORK, SEARCHED_ADDRESS, etc."
+    ),
     min_lat: float | None = Query(default=None, ge=-90, le=90),
     max_lat: float | None = Query(default=None, ge=-90, le=90),
     min_lng: float | None = Query(default=None, ge=-180, le=180),
@@ -494,20 +509,18 @@ async def list_visits(
     limit: int = Query(default=200, ge=1, le=500000),
     offset: int = Query(default=0, ge=0),
 ) -> list[LocationVisit]:
-    q = (
-        select(LocationVisit)
-        .order_by(LocationVisit.start_time.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    q = select(LocationVisit).order_by(LocationVisit.start_time.desc()).limit(limit).offset(offset)
     if start_date:
-        q = q.where(LocationVisit.start_time >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC))
+        q = q.where(
+            LocationVisit.start_time
+            >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC)
+        )
     if end_date:
         # end_date inclus
-        import calendar
-        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
-        next_day = end_date.replace(day=end_date.day) if end_date.day < last_day else end_date
-        q = q.where(LocationVisit.start_time < datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=UTC))
+        q = q.where(
+            LocationVisit.start_time
+            < datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=UTC)
+        )
     if semantic_type:
         q = q.where(LocationVisit.semantic_type == semantic_type)
     if min_lat is not None:
@@ -535,19 +548,25 @@ async def get_location_stats(
     ).scalar_one()
     home_visits = (
         await db.execute(
-            select(func.count()).select_from(LocationVisit).where(LocationVisit.semantic_type == "HOME")
+            select(func.count())
+            .select_from(LocationVisit)
+            .where(LocationVisit.semantic_type == "HOME")
         )
     ).scalar_one()
     work_visits = (
         await db.execute(
-            select(func.count()).select_from(LocationVisit).where(LocationVisit.semantic_type == "WORK")
+            select(func.count())
+            .select_from(LocationVisit)
+            .where(LocationVisit.semantic_type == "WORK")
         )
     ).scalar_one()
     earliest = (await db.execute(select(func.min(LocationVisit.start_time)))).scalar_one()
     latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one()
     total_points = (
         await db.execute(
-            select(func.count()).select_from(LocationPoint).where(LocationPoint.source == "google_timeline")
+            select(func.count())
+            .select_from(LocationPoint)
+            .where(LocationPoint.source == "google_timeline")
         )
     ).scalar_one()
     total_activities = (
@@ -597,7 +616,7 @@ async def ingest_timeline_file(
 
         # On detecte d'abord le format en lisant le debut du fichier
         with path.open("rb") as f:
-            for prefix, event, value in ijson.parse(f):
+            for prefix, _event, _value in ijson.parse(f):
                 if prefix in ("semanticSegments", "semanticSegments.item"):
                     fmt_detected = "semanticSegments_2024"
                     break
@@ -701,7 +720,6 @@ class YearStats(BaseModel):
 async def get_activity_stats(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[ActivityTypeStats]:
-    from sqlalchemy import case
 
     rows = (
         await db.execute(
@@ -712,8 +730,8 @@ async def get_activity_stats(
                 func.coalesce(
                     func.sum(
                         func.cast(
-                            func.strftime("%s", LocationActivity.end_time) -
-                            func.strftime("%s", LocationActivity.start_time),
+                            func.strftime("%s", LocationActivity.end_time)
+                            - func.strftime("%s", LocationActivity.start_time),
                             sa.Integer,
                         )
                     ),
@@ -756,12 +774,12 @@ async def get_visits_by_year(
             select(
                 year_expr.label("year"),
                 func.count().label("visits"),
-                func.sum(
-                    sa.case((LocationVisit.semantic_type == "HOME", 1), else_=0)
-                ).label("home"),
-                func.sum(
-                    sa.case((LocationVisit.semantic_type == "WORK", 1), else_=0)
-                ).label("work"),
+                func.sum(sa.case((LocationVisit.semantic_type == "HOME", 1), else_=0)).label(
+                    "home"
+                ),
+                func.sum(sa.case((LocationVisit.semantic_type == "WORK", 1), else_=0)).label(
+                    "work"
+                ),
             )
             .group_by(year_expr)
             .order_by(year_expr)
@@ -783,7 +801,9 @@ class RetagRequest(BaseModel):
     lat: float = Field(..., ge=-90, le=90, description="Latitude du lieu en degres")
     lng: float = Field(..., ge=-180, le=180, description="Longitude du lieu en degres")
     radius_m: float = Field(default=300, ge=1, le=50000, description="Rayon de retag en metres")
-    semantic_type: str = Field(..., description="HOME, WORK, SEARCHED_ADDRESS, ALIASED_LOCATION, UNKNOWN")
+    semantic_type: str = Field(
+        ..., description="HOME, WORK, SEARCHED_ADDRESS, ALIASED_LOCATION, UNKNOWN"
+    )
 
 
 class RetagResponse(BaseModel):
@@ -801,6 +821,7 @@ class VisitPatch(BaseModel):
 def _bbox(lat: float, lng: float, radius_m: float) -> tuple[float, float, float, float]:
     """Retourne (min_lat, max_lat, min_lng, max_lng) pour un cercle approxime par un carre."""
     import math
+
     delta_lat = radius_m / 111_000
     delta_lng = radius_m / (111_000 * max(math.cos(math.radians(lat)), 0.001))
     return lat - delta_lat, lat + delta_lat, lng - delta_lng, lng + delta_lng
@@ -819,18 +840,27 @@ async def retag_visits(
 
     # Recup les visites dans la bbox
     rows = (
-        await db.execute(
-            select(LocationVisit.id)
-            .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
-            .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
-            .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
-            .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
+        (
+            await db.execute(
+                select(LocationVisit.id)
+                .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
+                .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
+                .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
+                .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not rows:
-        return RetagResponse(updated=0, semantic_type=payload.semantic_type,
-                             lat=payload.lat, lng=payload.lng, radius_m=payload.radius_m)
+        return RetagResponse(
+            updated=0,
+            semantic_type=payload.semantic_type,
+            lat=payload.lat,
+            lng=payload.lng,
+            radius_m=payload.radius_m,
+        )
 
     # Update en batch
     ids = list(rows)
@@ -907,29 +937,34 @@ async def get_place_stats(
     min_lat, max_lat, min_lng, max_lng = _bbox(lat, lng, radius_m)
 
     rows = (
-        await db.execute(
-            select(LocationVisit)
-            .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
-            .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
-            .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
-            .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
-            .order_by(LocationVisit.start_time.desc())
-            .limit(500)
+        (
+            await db.execute(
+                select(LocationVisit)
+                .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
+                .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
+                .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
+                .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
+                .order_by(LocationVisit.start_time.desc())
+                .limit(500)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     visits_list = list(rows)
     if not visits_list:
         return PlaceStatsResponse(
-            total_visits=0, total_duration_minutes=0,
-            first_visit=None, last_visit=None,
-            semantic_type_breakdown={}, avg_duration_minutes=0,
+            total_visits=0,
+            total_duration_minutes=0,
+            first_visit=None,
+            last_visit=None,
+            semantic_type_breakdown={},
+            avg_duration_minutes=0,
             visits=[],
         )
 
-    durations_sec = [
-        max(0, (v.end_time - v.start_time).total_seconds()) for v in visits_list
-    ]
+    durations_sec = [max(0, (v.end_time - v.start_time).total_seconds()) for v in visits_list]
     total_min = sum(durations_sec) / 60
     avg_min = total_min / len(visits_list) if visits_list else 0
 
@@ -994,34 +1029,46 @@ async def get_day(
     start_dt = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC)
     end_dt = datetime.combine(target_date, datetime.max.time(), tzinfo=UTC)
 
-    visits = list((
-        await db.execute(
-            select(LocationVisit)
-            .where(LocationVisit.start_time >= start_dt)
-            .where(LocationVisit.start_time <= end_dt)
-            .order_by(LocationVisit.start_time)
+    visits = list(
+        (
+            await db.execute(
+                select(LocationVisit)
+                .where(LocationVisit.start_time >= start_dt)
+                .where(LocationVisit.start_time <= end_dt)
+                .order_by(LocationVisit.start_time)
+            )
         )
-    ).scalars().all())
+        .scalars()
+        .all()
+    )
 
-    activities = list((
-        await db.execute(
-            select(LocationActivity)
-            .where(LocationActivity.start_time >= start_dt)
-            .where(LocationActivity.start_time <= end_dt)
-            .order_by(LocationActivity.start_time)
+    activities = list(
+        (
+            await db.execute(
+                select(LocationActivity)
+                .where(LocationActivity.start_time >= start_dt)
+                .where(LocationActivity.start_time <= end_dt)
+                .order_by(LocationActivity.start_time)
+            )
         )
-    ).scalars().all())
+        .scalars()
+        .all()
+    )
 
-    points = list((
-        await db.execute(
-            select(LocationPoint)
-            .where(LocationPoint.timestamp_utc >= start_dt)
-            .where(LocationPoint.timestamp_utc <= end_dt)
-            .where(LocationPoint.source == "google_timeline")
-            .order_by(LocationPoint.timestamp_utc)
-            .limit(2000)
+    points = list(
+        (
+            await db.execute(
+                select(LocationPoint)
+                .where(LocationPoint.timestamp_utc >= start_dt)
+                .where(LocationPoint.timestamp_utc <= end_dt)
+                .where(LocationPoint.source == "google_timeline")
+                .order_by(LocationPoint.timestamp_utc)
+                .limit(2000)
+            )
         )
-    ).scalars().all())
+        .scalars()
+        .all()
+    )
 
     # Aggregations
     type_counts: dict[str, int] = {}
@@ -1082,6 +1129,7 @@ class TripsResponse(BaseModel):
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Distance haversine en km entre 2 points lat/lng."""
     import math
+
     R = 6371
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = math.radians(lat2 - lat1)
@@ -1100,18 +1148,25 @@ async def get_trips(
     home_lat: float | None = Query(default=None, description="Lat domicile (sinon auto-detect)"),
     home_lng: float | None = Query(default=None, description="Lng domicile (sinon auto-detect)"),
     home_radius_km: float = Query(default=50, ge=1, le=500, description="Rayon home en km"),
-    min_duration_hours: int = Query(default=24, ge=6, le=720, description="Duree minimum d'un voyage"),
-    min_distance_km: float = Query(default=100, ge=10, le=10000, description="Distance min depuis home"),
+    min_duration_hours: int = Query(
+        default=24, ge=6, le=720, description="Duree minimum d'un voyage"
+    ),
+    min_distance_km: float = Query(
+        default=100, ge=10, le=10000, description="Distance min depuis home"
+    ),
     home_recency_months: int | None = Query(
-        default=24, ge=1, le=240,
+        default=24,
+        ge=1,
+        le=240,
         description="Pour auto-detect home : on regarde les HOME visits des N derniers mois "
-                    "(0 ou null = tout l'historique). Defaut 24 mois pour gerer les demenagements.",
+        "(0 ou null = tout l'historique). Defaut 24 mois pour gerer les demenagements.",
     ),
 ) -> TripsResponse:
     # 1. Determine home reference si pas fourni
     if home_lat is None or home_lng is None:
         # Filtre par recence pour gerer les demenagements
         from datetime import timedelta
+
         q = (
             select(LocationVisit.lat, LocationVisit.lng, LocationVisit.start_time)
             .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
@@ -1124,8 +1179,9 @@ async def get_trips(
             # la DERNIERE visite enregistree, pas par rapport a aujourd'hui.
             latest = (
                 await db.execute(
-                    select(func.max(LocationVisit.start_time))
-                    .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+                    select(func.max(LocationVisit.start_time)).where(
+                        LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"])
+                    )
                 )
             ).scalar_one_or_none()
             if latest:
@@ -1136,14 +1192,16 @@ async def get_trips(
 
         # Si trop peu de HOME recents, on retombe sur tout l'historique
         if len(home_visits) < 5:
-            home_visits = list((
-                await db.execute(
-                    select(LocationVisit.lat, LocationVisit.lng, LocationVisit.start_time)
-                    .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
-                    .order_by(LocationVisit.start_time.desc())
-                    .limit(5000)
-                )
-            ).all())
+            home_visits = list(
+                (
+                    await db.execute(
+                        select(LocationVisit.lat, LocationVisit.lng, LocationVisit.start_time)
+                        .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+                        .order_by(LocationVisit.start_time.desc())
+                        .limit(5000)
+                    )
+                ).all()
+            )
 
         if not home_visits:
             raise HTTPException(
@@ -1173,15 +1231,18 @@ async def get_trips(
         h_lat, h_lng = home_lat, home_lng
 
     # 2. Toutes les visites chronologiquement
-    visits = list((
-        await db.execute(
-            select(LocationVisit).order_by(LocationVisit.start_time)
-        )
-    ).scalars().all())
+    visits = list(
+        (await db.execute(select(LocationVisit).order_by(LocationVisit.start_time))).scalars().all()
+    )
 
     if not visits:
-        return TripsResponse(home_lat=h_lat, home_lng=h_lng, home_radius_km=home_radius_km,
-                             min_duration_hours=min_duration_hours, trips=[])
+        return TripsResponse(
+            home_lat=h_lat,
+            home_lng=h_lng,
+            home_radius_km=home_radius_km,
+            min_duration_hours=min_duration_hours,
+            trips=[],
+        )
 
     # 3. Pour chaque visite, calcule distance au home + flag "away"
     enriched = []
@@ -1218,45 +1279,56 @@ async def get_trips(
         dest_count: dict[str, dict[str, Any]] = {}
         for v, d, _ in grp:
             key = v.place_id or f"{round(float(v.lat), 3)},{round(float(v.lng), 3)}"
-            existing = dest_count.setdefault(key, {
-                "lat": float(v.lat), "lng": float(v.lng),
-                "semantic_type": v.semantic_type, "count": 0,
-                "distance_km": round(d, 1),
-            })
+            existing = dest_count.setdefault(
+                key,
+                {
+                    "lat": float(v.lat),
+                    "lng": float(v.lng),
+                    "semantic_type": v.semantic_type,
+                    "count": 0,
+                    "distance_km": round(d, 1),
+                },
+            )
             existing["count"] += 1
         top_dests = sorted(dest_count.values(), key=lambda x: -x["count"])[:5]
 
         # Activities pendant la periode → distance totale
-        acts = list((
-            await db.execute(
-                select(LocationActivity.distance_meters)
-                .where(LocationActivity.start_time >= first.start_time)
-                .where(LocationActivity.end_time <= last.end_time)
+        acts = list(
+            (
+                await db.execute(
+                    select(LocationActivity.distance_meters)
+                    .where(LocationActivity.start_time >= first.start_time)
+                    .where(LocationActivity.end_time <= last.end_time)
+                )
             )
-        ).scalars().all())
+            .scalars()
+            .all()
+        )
         total_dist_km = round(sum((d or 0) for d in acts) / 1000, 1)
 
-        final_trips.append(Trip(
-            start_date=first.start_time.date().isoformat(),
-            end_date=last.end_time.date().isoformat(),
-            duration_days=max(1, int(duration_h / 24)),
-            visit_count=len(grp),
-            activity_count=len(acts),
-            total_distance_km=total_dist_km,
-            max_distance_from_home_km=round(max_dist, 1),
-            destinations=top_dests,
-        ))
+        final_trips.append(
+            Trip(
+                start_date=first.start_time.date().isoformat(),
+                end_date=last.end_time.date().isoformat(),
+                duration_days=max(1, int(duration_h / 24)),
+                visit_count=len(grp),
+                activity_count=len(acts),
+                total_distance_km=total_dist_km,
+                max_distance_from_home_km=round(max_dist, 1),
+                destinations=top_dests,
+            )
+        )
 
     final_trips.sort(key=lambda t: t.start_date, reverse=True)
 
     # ── Auto-naming via cache addresses ─────────────────────────────────
     # Charge toutes les addresses geocodees pour pouvoir lookup tolerant
     if final_trips:
-        all_addrs = list((
-            await db.execute(
-                select(LocationAddress).where(LocationAddress.status == "ok")
-            )
-        ).scalars().all())
+        all_addrs = list(
+            (await db.execute(select(LocationAddress).where(LocationAddress.status == "ok")))
+            .scalars()
+            .all()
+        )
         addr_by_cell = {(a.lat_e4, a.lng_e4): a for a in all_addrs}
 
         def _find_addr(lat: float, lng: float, max_offset: int = 5) -> LocationAddress | None:
@@ -1280,8 +1352,21 @@ async def get_trips(
             return None
 
         from datetime import date as _date
-        month_fr = ["jan", "fév", "mars", "avr", "mai", "juin",
-                    "juil", "août", "sept", "oct", "nov", "déc"]
+
+        month_fr = [
+            "jan",
+            "fév",
+            "mars",
+            "avr",
+            "mai",
+            "juin",
+            "juil",
+            "août",
+            "sept",
+            "oct",
+            "nov",
+            "déc",
+        ]
         for t in final_trips:
             if not t.destinations:
                 continue
@@ -1303,8 +1388,11 @@ async def get_trips(
                 t.name = f"{addr.country} · {mfr} {start_d.year}"
 
     return TripsResponse(
-        home_lat=h_lat, home_lng=h_lng, home_radius_km=home_radius_km,
-        min_duration_hours=min_duration_hours, trips=final_trips,
+        home_lat=h_lat,
+        home_lng=h_lng,
+        home_radius_km=home_radius_km,
+        min_duration_hours=min_duration_hours,
+        trips=final_trips,
     )
 
 
@@ -1359,7 +1447,9 @@ class TopPlacesResponse(BaseModel):
 async def get_top_places(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(default=10, ge=1, le=50),
-    bin_degrees: float = Query(default=0.001, ge=0.0001, le=0.1, description="Taille bin (0.001=~111m)"),
+    bin_degrees: float = Query(
+        default=0.001, ge=0.0001, le=0.1, description="Taille bin (0.001=~111m)"
+    ),
     semantic_type: str | None = Query(default=None),
 ) -> TopPlacesResponse:
     q = select(LocationVisit)
@@ -1373,10 +1463,16 @@ async def get_top_places(
         lat_b = round(float(v.lat) / bin_degrees) * bin_degrees
         lng_b = round(float(v.lng) / bin_degrees) * bin_degrees
         key = (round(lat_b, 6), round(lng_b, 6))
-        b = bins.setdefault(key, {
-            "visits": [], "minutes": 0,
-            "types": set(), "first": None, "last": None,
-        })
+        b = bins.setdefault(
+            key,
+            {
+                "visits": [],
+                "minutes": 0,
+                "types": set(),
+                "first": None,
+                "last": None,
+            },
+        )
         b["visits"].append(v)
         dur_min = max(0, (v.end_time - v.start_time).total_seconds() / 60)
         b["minutes"] += dur_min
@@ -1394,14 +1490,18 @@ async def get_top_places(
         primary = types[0] if "HOME" not in types else "HOME"
         if "WORK" in types and primary != "HOME":
             primary = "WORK"
-        places.append(TopPlace(
-            lat=lat_b, lng=lng_b,
-            visit_count=len(b["visits"]),
-            total_minutes=int(b["minutes"]),
-            semantic_types=types,
-            first_visit=b["first"], last_visit=b["last"],
-            label=f"{primary} · {len(b['visits'])} visites",
-        ))
+        places.append(
+            TopPlace(
+                lat=lat_b,
+                lng=lng_b,
+                visit_count=len(b["visits"]),
+                total_minutes=int(b["minutes"]),
+                semantic_types=types,
+                first_visit=b["first"],
+                last_visit=b["last"],
+                label=f"{primary} · {len(b['visits'])} visites",
+            )
+        )
 
     bin_size_m = int(bin_degrees * 111_000)
     return TopPlacesResponse(bin_size_meters=bin_size_m, places=places)
@@ -1411,7 +1511,7 @@ class Streak(BaseModel):
     label: str
     description: str
     value: int  # nombre de jours
-    unit: str   # 'jours', 'mois', etc.
+    unit: str  # 'jours', 'mois', etc.
     period_start: str | None
     period_end: str | None
 
@@ -1431,13 +1531,15 @@ async def get_streaks(
     streaks: list[Streak] = []
 
     # ── Max streak sans avion (longest period without FLYING) ─────────────
-    flights = list((
-        await db.execute(
-            select(LocationActivity.start_time, LocationActivity.end_time)
-            .where(LocationActivity.activity_type == "FLYING")
-            .order_by(LocationActivity.start_time)
-        )
-    ).all())
+    flights = list(
+        (
+            await db.execute(
+                select(LocationActivity.start_time, LocationActivity.end_time)
+                .where(LocationActivity.activity_type == "FLYING")
+                .order_by(LocationActivity.start_time)
+            )
+        ).all()
+    )
 
     earliest = (await db.execute(select(func.min(LocationVisit.start_time)))).scalar_one_or_none()
     latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one_or_none()
@@ -1458,23 +1560,29 @@ async def get_streaks(
                 max_gap_start = gap_start
                 max_gap_end = gap_end
         if max_gap_days > 0:
-            streaks.append(Streak(
-                label="Sans prendre l'avion",
-                description=f"{len(flights)} vols enregistres au total",
-                value=max_gap_days,
-                unit="jours",
-                period_start=max_gap_start.date().isoformat() if max_gap_start else None,
-                period_end=max_gap_end.date().isoformat() if max_gap_end else None,
-            ))
+            streaks.append(
+                Streak(
+                    label="Sans prendre l'avion",
+                    description=f"{len(flights)} vols enregistres au total",
+                    value=max_gap_days,
+                    unit="jours",
+                    period_start=max_gap_start.date().isoformat() if max_gap_start else None,
+                    period_end=max_gap_end.date().isoformat() if max_gap_end else None,
+                )
+            )
 
     # ── Max streak consecutif HOME (jours d'affilee a la maison) ──────────
-    home_visits = list((
-        await db.execute(
-            select(LocationVisit.start_time)
-            .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
-            .order_by(LocationVisit.start_time)
+    home_visits = list(
+        (
+            await db.execute(
+                select(LocationVisit.start_time)
+                .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+                .order_by(LocationVisit.start_time)
+            )
         )
-    ).scalars().all())
+        .scalars()
+        .all()
+    )
 
     if home_visits:
         # Group by date
@@ -1493,13 +1601,16 @@ async def get_streaks(
                 else:
                     current = 1
                     cur_start = home_dates[i]
-            streaks.append(Streak(
-                label="Jours consecutifs a la maison",
-                description=f"Plus longue periode chez soi sans bouger",
-                value=max_consec, unit="jours",
-                period_start=streak_start.isoformat(),
-                period_end=streak_end.isoformat(),
-            ))
+            streaks.append(
+                Streak(
+                    label="Jours consecutifs a la maison",
+                    description="Plus longue periode chez soi sans bouger",
+                    value=max_consec,
+                    unit="jours",
+                    period_start=streak_start.isoformat(),
+                    period_end=streak_end.isoformat(),
+                )
+            )
 
     # ── Longest single visit (le sejour le plus long sans bouger) ──────────
     longest_visit_row = (
@@ -1510,14 +1621,22 @@ async def get_streaks(
         )
     ).scalar_one_or_none()
     if longest_visit_row:
-        dur_min = max(0, (longest_visit_row.end_time - longest_visit_row.start_time).total_seconds() / 60)
-        streaks.append(Streak(
-            label="Plus longue visite",
-            description=f"Le sejour ininterrompu le plus long ({longest_visit_row.semantic_type or 'lieu inconnu'})",
-            value=int(dur_min / 60), unit="heures",
-            period_start=longest_visit_row.start_time.date().isoformat(),
-            period_end=longest_visit_row.end_time.date().isoformat(),
-        ))
+        dur_min = max(
+            0, (longest_visit_row.end_time - longest_visit_row.start_time).total_seconds() / 60
+        )
+        streaks.append(
+            Streak(
+                label="Plus longue visite",
+                description=(
+                    f"Le sejour ininterrompu le plus long "
+                    f"({longest_visit_row.semantic_type or 'lieu inconnu'})"
+                ),
+                value=int(dur_min / 60),
+                unit="heures",
+                period_start=longest_visit_row.start_time.date().isoformat(),
+                period_end=longest_visit_row.end_time.date().isoformat(),
+            )
+        )
 
     # ── Most active day (jour avec le plus d'activites) ───────────────────
     is_sq = await _is_sqlite(db)
@@ -1525,23 +1644,29 @@ async def get_streaks(
         date_expr = func.date(LocationActivity.start_time)
     else:
         date_expr = func.date(LocationActivity.start_time)
-    activity_by_day = list((
-        await db.execute(
-            select(date_expr.label("day"), func.count().label("n"))
-            .group_by(date_expr)
-            .order_by(func.count().desc())
-            .limit(1)
-        )
-    ).all())
+    activity_by_day = list(
+        (
+            await db.execute(
+                select(date_expr.label("day"), func.count().label("n"))
+                .group_by(date_expr)
+                .order_by(func.count().desc())
+                .limit(1)
+            )
+        ).all()
+    )
     if activity_by_day:
         day_str = str(activity_by_day[0].day)
         n = activity_by_day[0].n
-        streaks.append(Streak(
-            label="Journee la plus active",
-            description=f"Le record d'activites enregistrees en une journee",
-            value=n, unit="activites",
-            period_start=day_str, period_end=day_str,
-        ))
+        streaks.append(
+            Streak(
+                label="Journee la plus active",
+                description="Le record d'activites enregistrees en une journee",
+                value=n,
+                unit="activites",
+                period_start=day_str,
+                period_end=day_str,
+            )
+        )
 
     return StreaksResponse(streaks=streaks)
 
@@ -1563,19 +1688,22 @@ class DataGapsResponse(BaseModel):
 @router.get(
     "/gaps",
     response_model=DataGapsResponse,
-    summary="Detecte les trous de donnees >X heures (telephone eteint, voyage hors couverture, etc.)",
+    summary="Detecte les trous de donnees >X heures (telephone eteint, hors couverture, etc.)",
 )
 async def get_data_gaps(
     db: Annotated[AsyncSession, Depends(get_db)],
     min_hours: int = Query(default=24, ge=2, le=8760),
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> DataGapsResponse:
-    visits = list((
-        await db.execute(
-            select(LocationVisit.start_time, LocationVisit.end_time)
-            .order_by(LocationVisit.start_time)
-        )
-    ).all())
+    visits = list(
+        (
+            await db.execute(
+                select(LocationVisit.start_time, LocationVisit.end_time).order_by(
+                    LocationVisit.start_time
+                )
+            )
+        ).all()
+    )
 
     gaps: list[DataGap] = []
     total_hours = 0
@@ -1584,11 +1712,14 @@ async def get_data_gaps(
         gap_end = visits[i + 1].start_time
         delta_h = (gap_end - gap_start).total_seconds() / 3600
         if delta_h >= min_hours:
-            gaps.append(DataGap(
-                start_time=gap_start, end_time=gap_end,
-                duration_hours=round(delta_h, 1),
-                duration_days=int(delta_h / 24),
-            ))
+            gaps.append(
+                DataGap(
+                    start_time=gap_start,
+                    end_time=gap_end,
+                    duration_hours=round(delta_h, 1),
+                    duration_days=int(delta_h / 24),
+                )
+            )
             total_hours += delta_h
 
     # Tri par duree desc + limit
@@ -1622,19 +1753,26 @@ async def auto_detect_work(
     months_back: int = Query(default=6, ge=1, le=60),
 ) -> WorkDetectResponse:
     from datetime import timedelta
+
     latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one_or_none()
     if latest is None:
-        return WorkDetectResponse(detected=False, lat=None, lng=None,
-                                  visit_count=0, confidence=0.0, weekday_visits=0,
-                                  daytime_visits=0, label=None)
+        return WorkDetectResponse(
+            detected=False,
+            lat=None,
+            lng=None,
+            visit_count=0,
+            confidence=0.0,
+            weekday_visits=0,
+            daytime_visits=0,
+            label=None,
+        )
     cutoff = latest - timedelta(days=months_back * 30)
 
-    visits = list((
-        await db.execute(
-            select(LocationVisit)
-            .where(LocationVisit.start_time >= cutoff)
-        )
-    ).scalars().all())
+    visits = list(
+        (await db.execute(select(LocationVisit).where(LocationVisit.start_time >= cutoff)))
+        .scalars()
+        .all()
+    )
 
     # Filtre : weekday + heures 8-17h (apres conversion tz_offset si dispo)
     bins: dict[tuple[float, float], list[Any]] = {}
@@ -1658,9 +1796,16 @@ async def auto_detect_work(
         bins.setdefault((lat_b, lng_b), []).append(v)
 
     if not bins:
-        return WorkDetectResponse(detected=False, lat=None, lng=None,
-                                  visit_count=0, confidence=0.0,
-                                  weekday_visits=0, daytime_visits=0, label=None)
+        return WorkDetectResponse(
+            detected=False,
+            lat=None,
+            lng=None,
+            visit_count=0,
+            confidence=0.0,
+            weekday_visits=0,
+            daytime_visits=0,
+            label=None,
+        )
 
     # Cluster le plus dense
     densest_key = max(bins.keys(), key=lambda k: len(bins[k]))
@@ -1672,10 +1817,17 @@ async def auto_detect_work(
     avg_lng = sum(float(v.lng) for v in cluster) / cluster_size
 
     return WorkDetectResponse(
-        detected=True, lat=round(avg_lat, 6), lng=round(avg_lng, 6),
-        visit_count=cluster_size, confidence=confidence,
-        weekday_visits=cluster_size, daytime_visits=cluster_size,
-        label=f"{cluster_size} visites en semaine 8-17h sur {months_back}m, confiance {int(confidence*100)}%",
+        detected=True,
+        lat=round(avg_lat, 6),
+        lng=round(avg_lng, 6),
+        visit_count=cluster_size,
+        confidence=confidence,
+        weekday_visits=cluster_size,
+        daytime_visits=cluster_size,
+        label=(
+            f"{cluster_size} visites en semaine 8-17h sur {months_back}m"
+            f", confiance {int(confidence * 100)}%"
+        ),
     )
 
 
@@ -1704,13 +1856,15 @@ async def get_year_comparison(
         year_expr = func.extract("year", LocationVisit.start_time)
         month_expr = func.extract("month", LocationVisit.start_time)
 
-    rows = list((
-        await db.execute(
-            select(year_expr.label("y"), month_expr.label("m"), func.count().label("n"))
-            .group_by(year_expr, month_expr)
-            .order_by(year_expr, month_expr)
-        )
-    ).all())
+    rows = list(
+        (
+            await db.execute(
+                select(year_expr.label("y"), month_expr.label("m"), func.count().label("n"))
+                .group_by(year_expr, month_expr)
+                .order_by(year_expr, month_expr)
+            )
+        ).all()
+    )
 
     years_map: dict[int, list[int]] = {}
     for r in rows:
@@ -1787,16 +1941,18 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
     """
     import asyncio
     import time
+
     import httpx
 
     try:
         async with SessionLocal() as db:
             # 1. Trouver les cellules uniques NON-cachees, triees par recency desc
-            q = (
-                select(LocationVisit.lat, LocationVisit.lng,
-                       LocationVisit.semantic_type, LocationVisit.start_time)
-                .order_by(LocationVisit.start_time.desc())
-            )
+            q = select(
+                LocationVisit.lat,
+                LocationVisit.lng,
+                LocationVisit.semantic_type,
+                LocationVisit.start_time,
+            ).order_by(LocationVisit.start_time.desc())
             if only_unknown:
                 q = q.where(LocationVisit.semantic_type == "UNKNOWN")
             visits = list((await db.execute(q)).all())
@@ -1809,9 +1965,9 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
                 cells.setdefault((lat_e4, lng_e4), (float(v.lat), float(v.lng)))
 
             # Filtrer celles deja cachees (mais preserve l'ordre)
-            cached_rows = list((
-                await db.execute(select(LocationAddress.lat_e4, LocationAddress.lng_e4))
-            ).all())
+            cached_rows = list(
+                (await db.execute(select(LocationAddress.lat_e4, LocationAddress.lng_e4))).all()
+            )
             cached_keys = {(r.lat_e4, r.lng_e4) for r in cached_rows}
             todo = [(k, v) for k, v in cells.items() if k not in cached_keys]
             todo = todo[:max_cells]
@@ -1846,8 +2002,11 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
                         r = await client.get(
                             "https://nominatim.openstreetmap.org/reverse",
                             params={
-                                "lat": lat, "lon": lng, "format": "jsonv2",
-                                "accept-language": "fr,en", "zoom": 18,
+                                "lat": lat,
+                                "lon": lng,
+                                "format": "jsonv2",
+                                "accept-language": "fr,en",
+                                "zoom": 18,
                             },
                             headers={
                                 "User-Agent": "PersonalDataHub/1.0 "
@@ -1861,13 +2020,20 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
                         # Insere
                         async with SessionLocal() as inner_db:
                             row = LocationAddress(
-                                lat_e4=lat_e4, lng_e4=lng_e4, lat=lat, lng=lng,
+                                lat_e4=lat_e4,
+                                lng_e4=lng_e4,
+                                lat=lat,
+                                lng=lng,
                                 display_name=data.get("display_name"),
                                 house_number=addr.get("house_number"),
                                 road=addr.get("road"),
                                 suburb=addr.get("suburb") or addr.get("neighbourhood"),
-                                city=(addr.get("city") or addr.get("town")
-                                      or addr.get("village") or addr.get("municipality")),
+                                city=(
+                                    addr.get("city")
+                                    or addr.get("town")
+                                    or addr.get("village")
+                                    or addr.get("municipality")
+                                ),
                                 state=addr.get("state") or addr.get("province"),
                                 postcode=addr.get("postcode"),
                                 country=addr.get("country"),
@@ -1886,14 +2052,19 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
                         _GEOCODE_STATE["errors"] += 1
                         logger.warning(
                             "nominatim_batch_error",
-                            cell=(lat_e4, lng_e4), error=str(exc)[:100],
+                            cell=(lat_e4, lng_e4),
+                            error=str(exc)[:100],
                         )
                         # Insere quand meme un row "failed" pour pas re-tenter
                         try:
                             async with SessionLocal() as inner_db:
                                 row = LocationAddress(
-                                    lat_e4=lat_e4, lng_e4=lng_e4, lat=lat, lng=lng,
-                                    status="failed", error=str(exc)[:200],
+                                    lat_e4=lat_e4,
+                                    lng_e4=lng_e4,
+                                    lat=lat,
+                                    lng=lng,
+                                    status="failed",
+                                    error=str(exc)[:200],
                                 )
                                 inner_db.add(row)
                                 await inner_db.commit()
@@ -1916,9 +2087,12 @@ async def geocode_batch(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> GeocodeBatchResponse:
     import asyncio
+
     if _GEOCODE_STATE["running"]:
         return GeocodeBatchResponse(
-            started=False, total_to_process=0, already_cached=0,
+            started=False,
+            total_to_process=0,
+            already_cached=0,
             message="Un job de geocoding tourne deja",
         )
 
@@ -1928,16 +2102,16 @@ async def geocode_batch(
         q = q.where(LocationVisit.semantic_type == "UNKNOWN")
     visits = list((await db.execute(q)).all())
     cells = {(round(float(v.lat) * 10000), round(float(v.lng) * 10000)) for v in visits}
-    cached = list((await db.execute(
-        select(LocationAddress.lat_e4, LocationAddress.lng_e4)
-    )).all())
+    cached = list((await db.execute(select(LocationAddress.lat_e4, LocationAddress.lng_e4))).all())
     cached_keys = {(r.lat_e4, r.lng_e4) for r in cached}
     to_do = cells - cached_keys
     n_todo = min(len(to_do), payload.max_cells)
 
     if n_todo == 0:
         return GeocodeBatchResponse(
-            started=False, total_to_process=0, already_cached=len(cached_keys),
+            started=False,
+            total_to_process=0,
+            already_cached=len(cached_keys),
             message="Toutes les cellules sont deja geocodees",
         )
 
@@ -1951,7 +2125,9 @@ async def geocode_batch(
 
     eta_min = round(n_todo * 1.1 / 60, 1)
     return GeocodeBatchResponse(
-        started=True, total_to_process=n_todo, already_cached=len(cached_keys),
+        started=True,
+        total_to_process=n_todo,
+        already_cached=len(cached_keys),
         message=f"Job demarre. {n_todo} cellules a geocoder (~{eta_min} min a 1 req/s)",
     )
 
@@ -1972,8 +2148,11 @@ async def geocode_progress() -> GeocodeProgressResponse:
         eta_s = int(remaining / rate) if rate > 0 else None
     return GeocodeProgressResponse(
         running=s["running"],
-        total=s["total"], processed=s["processed"],
-        successes=s["successes"], errors=s["errors"], skipped=s["skipped"],
+        total=s["total"],
+        processed=s["processed"],
+        successes=s["successes"],
+        errors=s["errors"],
+        skipped=s["skipped"],
         pct=round(pct, 1),
         started_at=s["started_at"],
         last_address=s["last_address"],
@@ -2032,88 +2211,112 @@ async def get_insights(
     this_year = now.year
     last_year = this_year - 1
     is_sq = await _is_sqlite(db)
-    year_expr = func.cast(func.strftime("%Y", LocationVisit.start_time), sa.Integer) if is_sq else func.extract("year", LocationVisit.start_time)
-    year_counts = list((
-        await db.execute(
-            select(year_expr.label("y"), func.count().label("n"))
-            .where(year_expr.in_([this_year, last_year]))
-            .group_by(year_expr)
-        )
-    ).all())
+    year_expr = (
+        func.cast(func.strftime("%Y", LocationVisit.start_time), sa.Integer)
+        if is_sq
+        else func.extract("year", LocationVisit.start_time)
+    )
+    year_counts = list(
+        (
+            await db.execute(
+                select(year_expr.label("y"), func.count().label("n"))
+                .where(year_expr.in_([this_year, last_year]))
+                .group_by(year_expr)
+            )
+        ).all()
+    )
     counts_by_year = {int(r.y): r.n for r in year_counts}
     if counts_by_year.get(this_year) and counts_by_year.get(last_year):
-        diff_pct = round((counts_by_year[this_year] - counts_by_year[last_year])
-                         / counts_by_year[last_year] * 100)
-        insights.append(Insight(
-            title=f"Evolution {this_year} vs {last_year}",
-            description=f"{counts_by_year[this_year]:,} visites en {this_year} contre "
-                        f"{counts_by_year[last_year]:,} en {last_year}".replace(",", " "),
-            icon="trending-up" if diff_pct >= 0 else "trending-down",
-            color="#5cdb95" if diff_pct >= 0 else "#fbbf24",
-            metric=f"{'+' if diff_pct >= 0 else ''}{diff_pct}",
-            metric_unit="%",
-            cta_question=f"Compare mes visites {this_year} et {last_year} en detail",
-        ))
+        diff_pct = round(
+            (counts_by_year[this_year] - counts_by_year[last_year])
+            / counts_by_year[last_year]
+            * 100
+        )
+        insights.append(
+            Insight(
+                title=f"Evolution {this_year} vs {last_year}",
+                description=f"{counts_by_year[this_year]:,} visites en {this_year} contre "
+                f"{counts_by_year[last_year]:,} en {last_year}".replace(",", " "),
+                icon="trending-up" if diff_pct >= 0 else "trending-down",
+                color="#5cdb95" if diff_pct >= 0 else "#fbbf24",
+                metric=f"{'+' if diff_pct >= 0 else ''}{diff_pct}",
+                metric_unit="%",
+                cta_question=f"Compare mes visites {this_year} et {last_year} en detail",
+            )
+        )
 
     # 2. Pas alle chez maman (HOME) depuis X jours ?
-    last_home = (await db.execute(
-        select(func.max(LocationVisit.start_time))
-        .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
-    )).scalar_one_or_none()
+    last_home = (
+        await db.execute(
+            select(func.max(LocationVisit.start_time)).where(
+                LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"])
+            )
+        )
+    ).scalar_one_or_none()
     if last_home:
         last_home_aw = _aware(last_home)
         days_since = (now - last_home_aw).days
         if days_since >= 3:
-            insights.append(Insight(
-                title="Loin de chez toi",
-                description=f"Derniere visite HOME : il y a {days_since} jour"
-                            f"{'s' if days_since > 1 else ''} ({last_home_aw.date()})",
-                icon="home",
-                color="#5fb3f4" if days_since < 14 else "#ffb84d",
-                metric=str(days_since),
-                metric_unit="j",
-            ))
+            insights.append(
+                Insight(
+                    title="Loin de chez toi",
+                    description=f"Derniere visite HOME : il y a {days_since} jour"
+                    f"{'s' if days_since > 1 else ''} ({last_home_aw.date()})",
+                    icon="home",
+                    color="#5fb3f4" if days_since < 14 else "#ffb84d",
+                    metric=str(days_since),
+                    metric_unit="j",
+                )
+            )
 
     # 3. Anniversaire d'un voyage (un voyage il y a exactement 1, 2, 5, 10 ans)
     today_md = (now.month, now.day)
-    visits_anniv = list((
-        await db.execute(
-            select(LocationVisit)
-            .where(LocationVisit.semantic_type == "SEARCHED_ADDRESS")
-            .order_by(LocationVisit.start_time.desc())
-            .limit(2000)
+    visits_anniv = list(
+        (
+            await db.execute(
+                select(LocationVisit)
+                .where(LocationVisit.semantic_type == "SEARCHED_ADDRESS")
+                .order_by(LocationVisit.start_time.desc())
+                .limit(2000)
+            )
         )
-    ).scalars().all())
+        .scalars()
+        .all()
+    )
     for v in visits_anniv:
         years_ago = now.year - v.start_time.year
         if years_ago in (1, 2, 5, 10) and (v.start_time.month, v.start_time.day) == today_md:
-            insights.append(Insight(
-                title=f"Souvenir : il y a {years_ago} an{'s' if years_ago > 1 else ''}",
-                description=f"Le {v.start_time.date()} tu etais ici "
-                            f"({float(v.lat):.3f}, {float(v.lng):.3f})",
-                icon="calendar-clock",
-                color="#c084fc",
-                metric=f"{years_ago}",
-                metric_unit=f"an{'s' if years_ago > 1 else ''}",
-                cta_question=f"Que faisais-je le {v.start_time.date().isoformat()} ?",
-            ))
+            insights.append(
+                Insight(
+                    title=f"Souvenir : il y a {years_ago} an{'s' if years_ago > 1 else ''}",
+                    description=f"Le {v.start_time.date()} tu etais ici "
+                    f"({float(v.lat):.3f}, {float(v.lng):.3f})",
+                    icon="calendar-clock",
+                    color="#c084fc",
+                    metric=f"{years_ago}",
+                    metric_unit=f"an{'s' if years_ago > 1 else ''}",
+                    cta_question=f"Que faisais-je le {v.start_time.date().isoformat()} ?",
+                )
+            )
             break  # un anniversaire suffit
 
     # 4. Recordeur de la semaine (top destination 7 derniers jours)
     week_ago = now - _td(days=7)
-    top_week = list((
-        await db.execute(
-            select(
-                func.cast(LocationVisit.lat, sa.Float).label("lat"),
-                func.cast(LocationVisit.lng, sa.Float).label("lng"),
-                func.count().label("n"),
+    top_week = list(
+        (
+            await db.execute(
+                select(
+                    func.cast(LocationVisit.lat, sa.Float).label("lat"),
+                    func.cast(LocationVisit.lng, sa.Float).label("lng"),
+                    func.count().label("n"),
+                )
+                .where(LocationVisit.start_time >= week_ago)
+                .group_by(LocationVisit.lat, LocationVisit.lng)
+                .order_by(func.count().desc())
+                .limit(5)
             )
-            .where(LocationVisit.start_time >= week_ago)
-            .group_by(LocationVisit.lat, LocationVisit.lng)
-            .order_by(func.count().desc())
-            .limit(5)
-        )
-    ).all())
+        ).all()
+    )
     if top_week:
         # Cluster en cellules 0.001
         bins: dict[tuple[float, float], int] = {}
@@ -2123,42 +2326,50 @@ async def get_insights(
         if bins:
             top_key = max(bins.keys(), key=lambda k: bins[k])
             top_n = bins[top_key]
-            insights.append(Insight(
-                title="Lieu le plus visité cette semaine",
-                description=f"{top_n} visite{'s' if top_n > 1 else ''} a "
-                            f"{top_key[0]:.3f}, {top_key[1]:.3f}",
-                icon="map-pin",
-                color="#5cdb95",
-                metric=str(top_n),
-                metric_unit="visites",
-            ))
+            insights.append(
+                Insight(
+                    title="Lieu le plus visité cette semaine",
+                    description=f"{top_n} visite{'s' if top_n > 1 else ''} a "
+                    f"{top_key[0]:.3f}, {top_key[1]:.3f}",
+                    icon="map-pin",
+                    color="#5cdb95",
+                    metric=str(top_n),
+                    metric_unit="visites",
+                )
+            )
 
     # 5. Distance ce mois vs mois dernier
     month_start = now.replace(day=1, hour=0, minute=0, second=0)
     last_month_start = (month_start - _td(days=1)).replace(day=1)
     last_month_end = month_start - _td(seconds=1)
 
-    dist_this = (await db.execute(
-        select(func.coalesce(func.sum(LocationActivity.distance_meters), 0))
-        .where(LocationActivity.start_time >= month_start)
-    )).scalar_one() or 0
-    dist_last = (await db.execute(
-        select(func.coalesce(func.sum(LocationActivity.distance_meters), 0))
-        .where(LocationActivity.start_time >= last_month_start)
-        .where(LocationActivity.start_time <= last_month_end)
-    )).scalar_one() or 0
+    dist_this = (
+        await db.execute(
+            select(func.coalesce(func.sum(LocationActivity.distance_meters), 0)).where(
+                LocationActivity.start_time >= month_start
+            )
+        )
+    ).scalar_one() or 0
+    dist_last = (
+        await db.execute(
+            select(func.coalesce(func.sum(LocationActivity.distance_meters), 0))
+            .where(LocationActivity.start_time >= last_month_start)
+            .where(LocationActivity.start_time <= last_month_end)
+        )
+    ).scalar_one() or 0
 
     if dist_this > 0 or dist_last > 0:
-        diff = round((dist_this - dist_last) / max(dist_last, 1) * 100) if dist_last > 0 else 0
-        insights.append(Insight(
-            title=f"Distance ce mois ({now.strftime('%B').lower()})",
-            description=f"{dist_this/1000:.0f} km parcourus, "
-                        f"vs {dist_last/1000:.0f} km le mois dernier",
-            icon="ruler",
-            color="#ffb84d",
-            metric=f"{dist_this/1000:.0f}",
-            metric_unit="km",
-        ))
+        insights.append(
+            Insight(
+                title=f"Distance ce mois ({now.strftime('%B').lower()})",
+                description=f"{dist_this / 1000:.0f} km parcourus, "
+                f"vs {dist_last / 1000:.0f} km le mois dernier",
+                icon="ruler",
+                color="#ffb84d",
+                metric=f"{dist_this / 1000:.0f}",
+                metric_unit="km",
+            )
+        )
 
     return InsightsResponse(insights=insights, generated_at=now)
 
@@ -2207,21 +2418,22 @@ class RegionsResponse(BaseModel):
 async def get_regions(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RegionsResponse:
-    addrs = list((
-        await db.execute(
-            select(LocationAddress).where(LocationAddress.status == "ok")
-        )
-    ).scalars().all())
+    addrs = list(
+        (await db.execute(select(LocationAddress).where(LocationAddress.status == "ok")))
+        .scalars()
+        .all()
+    )
 
     if not addrs:
         return RegionsResponse(
-            countries_count=0, cities_count=0, cells_geocoded=0, countries=[],
+            countries_count=0,
+            cities_count=0,
+            cells_geocoded=0,
+            countries=[],
         )
 
     # Compte les visites par cellule pour ponderer (un meme lieu n'est pas N pays differents)
-    visit_rows = list((
-        await db.execute(select(LocationVisit.lat, LocationVisit.lng))
-    ).all())
+    visit_rows = list((await db.execute(select(LocationVisit.lat, LocationVisit.lng))).all())
     visit_count_by_cell: dict[tuple[int, int], int] = {}
     for v in visit_rows:
         key = (round(float(v.lat) * 10000), round(float(v.lng) * 10000))
@@ -2240,13 +2452,16 @@ async def get_regions(
             cities_set.add((a.country_code or a.country, a.city))
 
         country_key = a.country
-        c = country_data.setdefault(country_key, {
-            "country": a.country,
-            "country_code": a.country_code,
-            "cell_count": 0,
-            "visit_count": 0,
-            "cities": set(),
-        })
+        c = country_data.setdefault(
+            country_key,
+            {
+                "country": a.country,
+                "country_code": a.country_code,
+                "cell_count": 0,
+                "visit_count": 0,
+                "cities": set(),
+            },
+        )
         c["cell_count"] += 1
         c["visit_count"] += visits_here
         if a.city:
@@ -2255,8 +2470,10 @@ async def get_regions(
     countries = sorted(
         [
             CountryStat(
-                country=c["country"], country_code=c["country_code"],
-                cell_count=c["cell_count"], visit_count=c["visit_count"],
+                country=c["country"],
+                country_code=c["country_code"],
+                cell_count=c["cell_count"],
+                visit_count=c["visit_count"],
                 cities=sorted(c["cities"])[:20],  # top 20 villes
             )
             for c in country_data.values()
@@ -2303,9 +2520,12 @@ async def list_addresses(
         total=len(rows),
         addresses=[
             AddressLite(
-                lat_e4=r.lat_e4, lng_e4=r.lng_e4,
-                label=r.short_label(), city=r.city,
-                country=r.country, country_code=r.country_code,
+                lat_e4=r.lat_e4,
+                lng_e4=r.lng_e4,
+                label=r.short_label(),
+                city=r.city,
+                country=r.country,
+                country_code=r.country_code,
             )
             for r in rows
         ],
@@ -2322,15 +2542,23 @@ async def list_visits_with_addresses(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     semantic_type: str | None = Query(default=None),
-    has_address: bool | None = Query(default=None, description="Filtre : seulement avec/sans adresse"),
+    has_address: bool | None = Query(
+        default=None, description="Filtre : seulement avec/sans adresse"
+    ),
     limit: int = Query(default=200, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
 ) -> list[VisitWithAddress]:
     q = select(LocationVisit).order_by(LocationVisit.start_time.desc())
     if start_date:
-        q = q.where(LocationVisit.start_time >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC))
+        q = q.where(
+            LocationVisit.start_time
+            >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC)
+        )
     if end_date:
-        q = q.where(LocationVisit.start_time <= datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=UTC))
+        q = q.where(
+            LocationVisit.start_time
+            <= datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=UTC)
+        )
     if semantic_type:
         q = q.where(LocationVisit.semantic_type == semantic_type)
     q = q.limit(limit).offset(offset)
@@ -2339,13 +2567,17 @@ async def list_visits_with_addresses(
     # Charge tous les addresses correspondants en 1 query
     cells = {(round(float(v.lat) * 10000), round(float(v.lng) * 10000)) for v in visits}
     if cells:
-        addr_rows = list((
-            await db.execute(
-                select(LocationAddress).where(
-                    sa.tuple_(LocationAddress.lat_e4, LocationAddress.lng_e4).in_(list(cells))
+        addr_rows = list(
+            (
+                await db.execute(
+                    select(LocationAddress).where(
+                        sa.tuple_(LocationAddress.lat_e4, LocationAddress.lng_e4).in_(list(cells))
+                    )
                 )
             )
-        ).scalars().all())
+            .scalars()
+            .all()
+        )
         addr_map = {(a.lat_e4, a.lng_e4): a for a in addr_rows}
     else:
         addr_map = {}
@@ -2359,15 +2591,21 @@ async def list_visits_with_addresses(
             continue
         if has_address is False and short:
             continue
-        results.append(VisitWithAddress(
-            id=v.id, start_time=v.start_time, end_time=v.end_time,
-            lat=v.lat, lng=v.lng,
-            semantic_type=v.semantic_type, place_id=v.place_id,
-            address=short,
-            full_address=addr.display_name if addr else None,
-            city=addr.city if addr else None,
-            country=addr.country if addr else None,
-        ))
+        results.append(
+            VisitWithAddress(
+                id=v.id,
+                start_time=v.start_time,
+                end_time=v.end_time,
+                lat=v.lat,
+                lng=v.lng,
+                semantic_type=v.semantic_type,
+                place_id=v.place_id,
+                address=short,
+                full_address=addr.display_name if addr else None,
+                city=addr.city if addr else None,
+                country=addr.country if addr else None,
+            )
+        )
     return results
 
 
@@ -2383,23 +2621,31 @@ async def reverse_geocode(
 ) -> ReverseGeocodeResponse:
     import asyncio
     import time
+
     import httpx
 
     # 1. Check cache DB (location_addresses)
     lat_e4 = round(lat * 10000)
     lng_e4 = round(lng * 10000)
-    db_row = (await db.execute(
-        select(LocationAddress)
-        .where(LocationAddress.lat_e4 == lat_e4)
-        .where(LocationAddress.lng_e4 == lng_e4)
-    )).scalar_one_or_none()
+    db_row = (
+        await db.execute(
+            select(LocationAddress)
+            .where(LocationAddress.lat_e4 == lat_e4)
+            .where(LocationAddress.lng_e4 == lng_e4)
+        )
+    ).scalar_one_or_none()
     if db_row and db_row.status == "ok":
         return ReverseGeocodeResponse(
-            lat=lat, lng=lng, cached=True,
+            lat=lat,
+            lng=lng,
+            cached=True,
             address=db_row.display_name,
-            house_number=db_row.house_number, road=db_row.road,
-            city=db_row.city, state=db_row.state,
-            country=db_row.country, postcode=db_row.postcode,
+            house_number=db_row.house_number,
+            road=db_row.road,
+            city=db_row.city,
+            state=db_row.state,
+            country=db_row.country,
+            postcode=db_row.postcode,
         )
 
     # 2. Check cache memoire
@@ -2418,22 +2664,28 @@ async def reverse_geocode(
         try:
             r = await client.get(
                 "https://nominatim.openstreetmap.org/reverse",
-                params={"lat": lat, "lon": lng, "format": "jsonv2",
-                        "accept-language": "fr,en"},
-                headers={"User-Agent": "PersonalDataHub/1.0 (private use, marc.richard4@gmail.com)"},
+                params={"lat": lat, "lon": lng, "format": "jsonv2", "accept-language": "fr,en"},
+                headers={
+                    "User-Agent": "PersonalDataHub/1.0 (private use, marc.richard4@gmail.com)"
+                },
             )
             r.raise_for_status()
             data = r.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("nominatim_error", error=str(exc)[:100])
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Nominatim error: {exc}") from exc
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, f"Nominatim error: {exc}"
+            ) from exc
 
     addr = data.get("address", {})
     result = {
         "address": data.get("display_name"),
         "house_number": addr.get("house_number"),
         "road": addr.get("road"),
-        "city": addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality"),
+        "city": addr.get("city")
+        or addr.get("town")
+        or addr.get("village")
+        or addr.get("municipality"),
         "state": addr.get("state") or addr.get("province"),
         "country": addr.get("country"),
         "postcode": addr.get("postcode"),

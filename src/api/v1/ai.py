@@ -421,12 +421,12 @@ async def ask(
         if lines:
             history_block = (
                 "Contexte de la conversation (pour resoudre 'et avant ?', 'le suivant ?', etc.) :\n"
-                + "\n".join(lines) + "\n\n"
+                + "\n".join(lines)
+                + "\n\n"
             )
 
     sql_prompt = (
-        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
-        f"{history_block}Q: {payload.question}\nSQL:"
+        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n{history_block}Q: {payload.question}\nSQL:"
     )
 
     try:

@@ -70,8 +70,10 @@ async def list_named_places(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[NamedPlace]:
     rows = (
-        await db.execute(select(NamedPlace).order_by(NamedPlace.created_at.desc()))
-    ).scalars().all()
+        (await db.execute(select(NamedPlace).order_by(NamedPlace.created_at.desc())))
+        .scalars()
+        .all()
+    )
     return list(rows)
 
 
@@ -152,9 +154,7 @@ class TripNoteRead(BaseModel):
 async def list_trip_notes(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[TripNote]:
-    rows = (
-        await db.execute(select(TripNote).order_by(TripNote.start_date.desc()))
-    ).scalars().all()
+    rows = (await db.execute(select(TripNote).order_by(TripNote.start_date.desc()))).scalars().all()
     return list(rows)
 
 
@@ -165,9 +165,7 @@ async def upsert_trip_note(
 ) -> TripNote:
     """Upsert par start_date : si la note existe deja, met a jour, sinon cree."""
     existing = (
-        await db.execute(
-            select(TripNote).where(TripNote.start_date == payload.start_date)
-        )
+        await db.execute(select(TripNote).where(TripNote.start_date == payload.start_date))
     ).scalar_one_or_none()
     if existing is None:
         note = TripNote(**payload.model_dump())

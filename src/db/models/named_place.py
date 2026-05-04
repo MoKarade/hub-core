@@ -20,9 +20,7 @@ class NamedPlace(Base):
     """
 
     __tablename__ = "named_places"
-    __table_args__ = (
-        Index("ix_named_place_semantic", "semantic_type"),
-    )
+    __table_args__ = (Index("ix_named_place_semantic", "semantic_type"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -31,7 +29,7 @@ class NamedPlace(Base):
     radius_m: Mapped[float] = mapped_column(Float, default=200, nullable=False)
     semantic_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)  # hex
-    icon: Mapped[str | None] = mapped_column(String(40), nullable=True)   # lucide name
+    icon: Mapped[str | None] = mapped_column(String(40), nullable=True)  # lucide name
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
