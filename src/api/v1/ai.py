@@ -48,6 +48,13 @@ class AskRequest(BaseModel):
         max_length=500,
         examples=["Combien j'ai depense en restos en mars 2026 ?"],
     )
+    history: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Historique conversationnel [{role: 'user'|'assistant', content: str}]. "
+            "Permet les questions de suivi (et avant ca ?, le mois suivant ?)."
+        ),
+    )
 
 
 class AskResponse(BaseModel):
@@ -391,9 +398,36 @@ async def ask(
     settings: Annotated[Settings, Depends(get_settings)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AskResponse:
-    """Questionne le hub en francais. LLM -> SQL -> exec -> LLM -> reponse."""
-    # 1. Pass 1 LLM : genere le SQL.
-    sql_prompt = f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\nQ: {payload.question}\nSQL:"
+    """Questionne le hub en francais. LLM -> SQL -> exec -> LLM -> reponse.
+
+    Mode conversationnel : si payload.history est fourni, le LLM voit les Q/R
+    precedentes pour resoudre les references contextuelles (et avant ?, le suivant ?).
+    """
+    # 1. Pass 1 LLM : genere le SQL avec contexte historique.
+    history_block = ""
+    if payload.history:
+        # Garde les 6 derniers tours (3 Q/R) pour ne pas exploser le prompt
+        recent = payload.history[-6:]
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "user")
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                lines.append(f"Q precedente: {content}")
+            elif role == "assistant":
+                lines.append(f"Reponse precedente: {content[:200]}")
+        if lines:
+            history_block = (
+                "Contexte de la conversation (pour resoudre 'et avant ?', 'le suivant ?', etc.) :\n"
+                + "\n".join(lines) + "\n\n"
+            )
+
+    sql_prompt = (
+        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
+        f"{history_block}Q: {payload.question}\nSQL:"
+    )
 
     try:
         # Timeout 180s : le qwen2.5:14b peut prendre 60-120s sur prompt long (cold start).

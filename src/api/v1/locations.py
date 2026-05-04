@@ -1066,6 +1066,9 @@ class Trip(BaseModel):
     total_distance_km: float
     max_distance_from_home_km: float
     destinations: list[dict[str, Any]]  # top 5 lieux visites
+    name: str | None = None  # nom auto-genere depuis top destination + adresses
+    primary_country: str | None = None
+    primary_city: str | None = None
 
 
 class TripsResponse(BaseModel):
@@ -1245,6 +1248,59 @@ async def get_trips(
         ))
 
     final_trips.sort(key=lambda t: t.start_date, reverse=True)
+
+    # ── Auto-naming via cache addresses ─────────────────────────────────
+    # Charge toutes les addresses geocodees pour pouvoir lookup tolerant
+    if final_trips:
+        all_addrs = list((
+            await db.execute(
+                select(LocationAddress).where(LocationAddress.status == "ok")
+            )
+        ).scalars().all())
+        addr_by_cell = {(a.lat_e4, a.lng_e4): a for a in all_addrs}
+
+        def _find_addr(lat: float, lng: float, max_offset: int = 5) -> LocationAddress | None:
+            """Lookup tolerant ±N cellules (1 cellule = 11m, 5 = 55m)."""
+            base_lat = round(lat * 10000)
+            base_lng = round(lng * 10000)
+            # Rayon expansif
+            for r in range(max_offset + 1):
+                if r == 0:
+                    addr = addr_by_cell.get((base_lat, base_lng))
+                    if addr:
+                        return addr
+                    continue
+                for dlat in range(-r, r + 1):
+                    for dlng in range(-r, r + 1):
+                        if abs(dlat) != r and abs(dlng) != r:
+                            continue  # only edges
+                        addr = addr_by_cell.get((base_lat + dlat, base_lng + dlng))
+                        if addr:
+                            return addr
+            return None
+
+        from datetime import date as _date
+        month_fr = ["jan", "fév", "mars", "avr", "mai", "juin",
+                    "juil", "août", "sept", "oct", "nov", "déc"]
+        for t in final_trips:
+            if not t.destinations:
+                continue
+            # Essaye chaque destination top (1 puis 2 puis 3)
+            addr = None
+            for d in t.destinations[:3]:
+                addr = _find_addr(float(d["lat"]), float(d["lng"]))
+                if addr:
+                    break
+            if not addr:
+                continue
+            t.primary_city = addr.city
+            t.primary_country = addr.country
+            start_d = _date.fromisoformat(t.start_date)
+            mfr = month_fr[start_d.month - 1]
+            if addr.city and addr.country:
+                t.name = f"{addr.city}, {addr.country} · {mfr} {start_d.year}"
+            elif addr.country:
+                t.name = f"{addr.country} · {mfr} {start_d.year}"
 
     return TripsResponse(
         home_lat=h_lat, home_lng=h_lng, home_radius_km=home_radius_km,
@@ -1944,6 +2000,94 @@ class VisitWithAddress(BaseModel):
     full_address: str | None
     city: str | None
     country: str | None
+
+
+class CountryStat(BaseModel):
+    country: str
+    country_code: str | None
+    cell_count: int
+    visit_count: int
+    cities: list[str]
+
+
+class RegionsResponse(BaseModel):
+    countries_count: int
+    cities_count: int
+    cells_geocoded: int
+    countries: list[CountryStat]
+
+
+@router.get(
+    "/regions",
+    response_model=RegionsResponse,
+    summary="Compteur villes/pays uniques visites + breakdown par pays",
+)
+async def get_regions(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RegionsResponse:
+    addrs = list((
+        await db.execute(
+            select(LocationAddress).where(LocationAddress.status == "ok")
+        )
+    ).scalars().all())
+
+    if not addrs:
+        return RegionsResponse(
+            countries_count=0, cities_count=0, cells_geocoded=0, countries=[],
+        )
+
+    # Compte les visites par cellule pour ponderer (un meme lieu n'est pas N pays differents)
+    visit_rows = list((
+        await db.execute(select(LocationVisit.lat, LocationVisit.lng))
+    ).all())
+    visit_count_by_cell: dict[tuple[int, int], int] = {}
+    for v in visit_rows:
+        key = (round(float(v.lat) * 10000), round(float(v.lng) * 10000))
+        visit_count_by_cell[key] = visit_count_by_cell.get(key, 0) + 1
+
+    # Aggregation par pays
+    country_data: dict[str, dict] = {}
+    cities_set: set[tuple[str, str]] = set()  # (country_code, city)
+
+    for a in addrs:
+        if not a.country:
+            continue
+        cell = (a.lat_e4, a.lng_e4)
+        visits_here = visit_count_by_cell.get(cell, 0)
+        if a.city:
+            cities_set.add((a.country_code or a.country, a.city))
+
+        country_key = a.country
+        c = country_data.setdefault(country_key, {
+            "country": a.country,
+            "country_code": a.country_code,
+            "cell_count": 0,
+            "visit_count": 0,
+            "cities": set(),
+        })
+        c["cell_count"] += 1
+        c["visit_count"] += visits_here
+        if a.city:
+            c["cities"].add(a.city)
+
+    countries = sorted(
+        [
+            CountryStat(
+                country=c["country"], country_code=c["country_code"],
+                cell_count=c["cell_count"], visit_count=c["visit_count"],
+                cities=sorted(c["cities"])[:20],  # top 20 villes
+            )
+            for c in country_data.values()
+        ],
+        key=lambda c: -c.visit_count,
+    )
+
+    return RegionsResponse(
+        countries_count=len(country_data),
+        cities_count=len(cities_set),
+        cells_geocoded=len(addrs),
+        countries=countries,
+    )
 
 
 class AddressLite(BaseModel):
