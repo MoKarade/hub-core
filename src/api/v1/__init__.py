@@ -10,6 +10,7 @@ from src.api.v1 import (
     emails,
     events,
     finance,
+    garmin,
     health,
     health_data,
     locations,
@@ -32,6 +33,7 @@ router.include_router(osint.router)
 router.include_router(emails.router)
 router.include_router(calendar.router)
 router.include_router(health_data.router)
+router.include_router(garmin.router)
 router.include_router(photos.router)
 router.include_router(drive.router)
 router.include_router(contacts.router)
