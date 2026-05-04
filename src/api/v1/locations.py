@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
+import sqlalchemy as sa
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.events import broadcast
@@ -671,3 +672,207 @@ async def ingest_timeline_file(
         duration_seconds=round(duration, 2),
         format_detected=fmt_detected,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — stats enrichies
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ActivityTypeStats(BaseModel):
+    activity_type: str
+    count: int
+    total_distance_km: float
+    total_duration_minutes: int
+
+
+class YearStats(BaseModel):
+    year: int
+    visits: int
+    home_visits: int
+    work_visits: int
+
+
+@router.get(
+    "/activity-stats",
+    response_model=list[ActivityTypeStats],
+    summary="Stats par type d'activite (count + distance totale + duree)",
+)
+async def get_activity_stats(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ActivityTypeStats]:
+    from sqlalchemy import case
+
+    rows = (
+        await db.execute(
+            select(
+                LocationActivity.activity_type,
+                func.count().label("count"),
+                func.coalesce(func.sum(LocationActivity.distance_meters), 0).label("total_m"),
+                func.coalesce(
+                    func.sum(
+                        func.cast(
+                            func.strftime("%s", LocationActivity.end_time) -
+                            func.strftime("%s", LocationActivity.start_time),
+                            sa.Integer,
+                        )
+                    ),
+                    0,
+                ).label("total_s"),
+            )
+            .group_by(LocationActivity.activity_type)
+            .order_by(func.count().desc())
+        )
+    ).all()
+
+    return [
+        ActivityTypeStats(
+            activity_type=r.activity_type or "UNKNOWN_ACTIVITY_TYPE",
+            count=r.count,
+            total_distance_km=round(r.total_m / 1000, 1),
+            total_duration_minutes=r.total_s // 60,
+        )
+        for r in rows
+    ]
+
+
+@router.get(
+    "/visits-by-year",
+    response_model=list[YearStats],
+    summary="Nombre de visites par annee",
+)
+async def get_visits_by_year(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[YearStats]:
+    # SQLite: strftime('%Y', ...) / PostgreSQL: extract(year from ...)
+    is_sq = await _is_sqlite(db)
+    if is_sq:
+        year_expr = func.strftime("%Y", LocationVisit.start_time)
+    else:
+        year_expr = func.extract("year", LocationVisit.start_time)
+
+    rows = (
+        await db.execute(
+            select(
+                year_expr.label("year"),
+                func.count().label("visits"),
+                func.sum(
+                    sa.case((LocationVisit.semantic_type == "HOME", 1), else_=0)
+                ).label("home"),
+                func.sum(
+                    sa.case((LocationVisit.semantic_type == "WORK", 1), else_=0)
+                ).label("work"),
+            )
+            .group_by(year_expr)
+            .order_by(year_expr)
+        )
+    ).all()
+
+    return [
+        YearStats(year=int(r.year), visits=r.visits, home_visits=r.home, work_visits=r.work)
+        for r in rows
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — gestion lieux (retag + patch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class RetagRequest(BaseModel):
+    lat: float = Field(..., ge=-90, le=90, description="Latitude du lieu en degres")
+    lng: float = Field(..., ge=-180, le=180, description="Longitude du lieu en degres")
+    radius_m: float = Field(default=300, ge=1, le=50000, description="Rayon de retag en metres")
+    semantic_type: str = Field(..., description="HOME, WORK, SEARCHED_ADDRESS, ALIASED_LOCATION, UNKNOWN")
+
+
+class RetagResponse(BaseModel):
+    updated: int
+    semantic_type: str
+    lat: float
+    lng: float
+    radius_m: float
+
+
+class VisitPatch(BaseModel):
+    semantic_type: str = Field(..., description="Nouveau type semantique")
+
+
+def _bbox(lat: float, lng: float, radius_m: float) -> tuple[float, float, float, float]:
+    """Retourne (min_lat, max_lat, min_lng, max_lng) pour un cercle approxime par un carre."""
+    import math
+    delta_lat = radius_m / 111_000
+    delta_lng = radius_m / (111_000 * max(math.cos(math.radians(lat)), 0.001))
+    return lat - delta_lat, lat + delta_lat, lng - delta_lng, lng + delta_lng
+
+
+@router.post(
+    "/retag",
+    response_model=RetagResponse,
+    summary="Retagger toutes les visites dans un rayon autour d'un point (ex: definir domicile)",
+)
+async def retag_visits(
+    payload: RetagRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RetagResponse:
+    min_lat, max_lat, min_lng, max_lng = _bbox(payload.lat, payload.lng, payload.radius_m)
+
+    # Recup les visites dans la bbox
+    rows = (
+        await db.execute(
+            select(LocationVisit.id)
+            .where(LocationVisit.lat >= Decimal(str(round(min_lat, 7))))
+            .where(LocationVisit.lat <= Decimal(str(round(max_lat, 7))))
+            .where(LocationVisit.lng >= Decimal(str(round(min_lng, 7))))
+            .where(LocationVisit.lng <= Decimal(str(round(max_lng, 7))))
+        )
+    ).scalars().all()
+
+    if not rows:
+        return RetagResponse(updated=0, semantic_type=payload.semantic_type,
+                             lat=payload.lat, lng=payload.lng, radius_m=payload.radius_m)
+
+    # Update en batch
+    ids = list(rows)
+    await db.execute(
+        sa_update(LocationVisit)
+        .where(LocationVisit.id.in_(ids))
+        .values(semantic_type=payload.semantic_type)
+    )
+    await db.commit()
+
+    logger.info(
+        "visits_retagged",
+        count=len(ids),
+        semantic_type=payload.semantic_type,
+        lat=payload.lat,
+        lng=payload.lng,
+        radius_m=payload.radius_m,
+    )
+
+    return RetagResponse(
+        updated=len(ids),
+        semantic_type=payload.semantic_type,
+        lat=payload.lat,
+        lng=payload.lng,
+        radius_m=payload.radius_m,
+    )
+
+
+@router.patch(
+    "/visits/{visit_id}",
+    response_model=LocationVisitRead,
+    summary="Modifier le type semantique d'une visite individuelle",
+)
+async def patch_visit(
+    visit_id: UUID,
+    payload: VisitPatch,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LocationVisit:
+    visit = await db.get(LocationVisit, visit_id)
+    if visit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Visite introuvable")
+    visit.semantic_type = payload.semantic_type
+    await db.commit()
+    await db.refresh(visit)
+    return visit
