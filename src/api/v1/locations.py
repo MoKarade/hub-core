@@ -1274,6 +1274,405 @@ class ReverseGeocodeResponse(BaseModel):
     cached: bool
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — top places / streaks / gaps / auto-detect work / year comparison
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TopPlace(BaseModel):
+    lat: float
+    lng: float
+    visit_count: int
+    total_minutes: int
+    semantic_types: list[str]
+    first_visit: datetime | None
+    last_visit: datetime | None
+    label: str  # ex "HOME · 156 visites"
+
+
+class TopPlacesResponse(BaseModel):
+    bin_size_meters: int
+    places: list[TopPlace]
+
+
+@router.get(
+    "/top-places",
+    response_model=TopPlacesResponse,
+    summary="Top N lieux les plus visites (binning par grille fine)",
+)
+async def get_top_places(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=10, ge=1, le=50),
+    bin_degrees: float = Query(default=0.001, ge=0.0001, le=0.1, description="Taille bin (0.001=~111m)"),
+    semantic_type: str | None = Query(default=None),
+) -> TopPlacesResponse:
+    q = select(LocationVisit)
+    if semantic_type:
+        q = q.where(LocationVisit.semantic_type == semantic_type)
+    rows = list((await db.execute(q)).scalars().all())
+
+    # Binning Python (compatible SQLite + PG sans tricks dialect-specific)
+    bins: dict[tuple[float, float], dict[str, Any]] = {}
+    for v in rows:
+        lat_b = round(float(v.lat) / bin_degrees) * bin_degrees
+        lng_b = round(float(v.lng) / bin_degrees) * bin_degrees
+        key = (round(lat_b, 6), round(lng_b, 6))
+        b = bins.setdefault(key, {
+            "visits": [], "minutes": 0,
+            "types": set(), "first": None, "last": None,
+        })
+        b["visits"].append(v)
+        dur_min = max(0, (v.end_time - v.start_time).total_seconds() / 60)
+        b["minutes"] += dur_min
+        if v.semantic_type:
+            b["types"].add(v.semantic_type)
+        if b["first"] is None or v.start_time < b["first"]:
+            b["first"] = v.start_time
+        if b["last"] is None or v.start_time > b["last"]:
+            b["last"] = v.start_time
+
+    sorted_bins = sorted(bins.items(), key=lambda kv: -len(kv[1]["visits"]))[:limit]
+    places: list[TopPlace] = []
+    for (lat_b, lng_b), b in sorted_bins:
+        types = sorted(b["types"]) or ["UNKNOWN"]
+        primary = types[0] if "HOME" not in types else "HOME"
+        if "WORK" in types and primary != "HOME":
+            primary = "WORK"
+        places.append(TopPlace(
+            lat=lat_b, lng=lng_b,
+            visit_count=len(b["visits"]),
+            total_minutes=int(b["minutes"]),
+            semantic_types=types,
+            first_visit=b["first"], last_visit=b["last"],
+            label=f"{primary} · {len(b['visits'])} visites",
+        ))
+
+    bin_size_m = int(bin_degrees * 111_000)
+    return TopPlacesResponse(bin_size_meters=bin_size_m, places=places)
+
+
+class Streak(BaseModel):
+    label: str
+    description: str
+    value: int  # nombre de jours
+    unit: str   # 'jours', 'mois', etc.
+    period_start: str | None
+    period_end: str | None
+
+
+class StreaksResponse(BaseModel):
+    streaks: list[Streak]
+
+
+@router.get(
+    "/streaks",
+    response_model=StreaksResponse,
+    summary="Streaks calcules : max sans avion, max consecutifs HOME, longest stay, etc.",
+)
+async def get_streaks(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreaksResponse:
+    streaks: list[Streak] = []
+
+    # ── Max streak sans avion (longest period without FLYING) ─────────────
+    flights = list((
+        await db.execute(
+            select(LocationActivity.start_time, LocationActivity.end_time)
+            .where(LocationActivity.activity_type == "FLYING")
+            .order_by(LocationActivity.start_time)
+        )
+    ).all())
+
+    earliest = (await db.execute(select(func.min(LocationVisit.start_time)))).scalar_one_or_none()
+    latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one_or_none()
+
+    if flights and earliest and latest:
+        flight_dates = [(f.start_time, f.end_time) for f in flights]
+        # Calcule les "trous" entre vols + bord de plage
+        boundaries = [(earliest, earliest)] + flight_dates + [(latest, latest)]
+        max_gap_days = 0
+        max_gap_start = None
+        max_gap_end = None
+        for i in range(len(boundaries) - 1):
+            gap_start = boundaries[i][1]
+            gap_end = boundaries[i + 1][0]
+            gap_days = (gap_end - gap_start).days
+            if gap_days > max_gap_days:
+                max_gap_days = gap_days
+                max_gap_start = gap_start
+                max_gap_end = gap_end
+        if max_gap_days > 0:
+            streaks.append(Streak(
+                label="Sans prendre l'avion",
+                description=f"{len(flights)} vols enregistres au total",
+                value=max_gap_days,
+                unit="jours",
+                period_start=max_gap_start.date().isoformat() if max_gap_start else None,
+                period_end=max_gap_end.date().isoformat() if max_gap_end else None,
+            ))
+
+    # ── Max streak consecutif HOME (jours d'affilee a la maison) ──────────
+    home_visits = list((
+        await db.execute(
+            select(LocationVisit.start_time)
+            .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+            .order_by(LocationVisit.start_time)
+        )
+    ).scalars().all())
+
+    if home_visits:
+        # Group by date
+        home_dates = sorted(set(v.date() for v in home_visits))
+        if home_dates:
+            max_consec = current = 1
+            streak_start = streak_end = home_dates[0]
+            cur_start = home_dates[0]
+            for i in range(1, len(home_dates)):
+                if (home_dates[i] - home_dates[i - 1]).days == 1:
+                    current += 1
+                    if current > max_consec:
+                        max_consec = current
+                        streak_start = cur_start
+                        streak_end = home_dates[i]
+                else:
+                    current = 1
+                    cur_start = home_dates[i]
+            streaks.append(Streak(
+                label="Jours consecutifs a la maison",
+                description=f"Plus longue periode chez soi sans bouger",
+                value=max_consec, unit="jours",
+                period_start=streak_start.isoformat(),
+                period_end=streak_end.isoformat(),
+            ))
+
+    # ── Longest single visit (le sejour le plus long sans bouger) ──────────
+    longest_visit_row = (
+        await db.execute(
+            select(LocationVisit)
+            .order_by((LocationVisit.end_time - LocationVisit.start_time).desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if longest_visit_row:
+        dur_min = max(0, (longest_visit_row.end_time - longest_visit_row.start_time).total_seconds() / 60)
+        streaks.append(Streak(
+            label="Plus longue visite",
+            description=f"Le sejour ininterrompu le plus long ({longest_visit_row.semantic_type or 'lieu inconnu'})",
+            value=int(dur_min / 60), unit="heures",
+            period_start=longest_visit_row.start_time.date().isoformat(),
+            period_end=longest_visit_row.end_time.date().isoformat(),
+        ))
+
+    # ── Most active day (jour avec le plus d'activites) ───────────────────
+    is_sq = await _is_sqlite(db)
+    if is_sq:
+        date_expr = func.date(LocationActivity.start_time)
+    else:
+        date_expr = func.date(LocationActivity.start_time)
+    activity_by_day = list((
+        await db.execute(
+            select(date_expr.label("day"), func.count().label("n"))
+            .group_by(date_expr)
+            .order_by(func.count().desc())
+            .limit(1)
+        )
+    ).all())
+    if activity_by_day:
+        day_str = str(activity_by_day[0].day)
+        n = activity_by_day[0].n
+        streaks.append(Streak(
+            label="Journee la plus active",
+            description=f"Le record d'activites enregistrees en une journee",
+            value=n, unit="activites",
+            period_start=day_str, period_end=day_str,
+        ))
+
+    return StreaksResponse(streaks=streaks)
+
+
+class DataGap(BaseModel):
+    start_time: datetime
+    end_time: datetime
+    duration_hours: float
+    duration_days: int
+
+
+class DataGapsResponse(BaseModel):
+    min_hours: int
+    total_gaps: int
+    total_missing_hours: int
+    gaps: list[DataGap]
+
+
+@router.get(
+    "/gaps",
+    response_model=DataGapsResponse,
+    summary="Detecte les trous de donnees >X heures (telephone eteint, voyage hors couverture, etc.)",
+)
+async def get_data_gaps(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    min_hours: int = Query(default=24, ge=2, le=8760),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> DataGapsResponse:
+    visits = list((
+        await db.execute(
+            select(LocationVisit.start_time, LocationVisit.end_time)
+            .order_by(LocationVisit.start_time)
+        )
+    ).all())
+
+    gaps: list[DataGap] = []
+    total_hours = 0
+    for i in range(len(visits) - 1):
+        gap_start = visits[i].end_time
+        gap_end = visits[i + 1].start_time
+        delta_h = (gap_end - gap_start).total_seconds() / 3600
+        if delta_h >= min_hours:
+            gaps.append(DataGap(
+                start_time=gap_start, end_time=gap_end,
+                duration_hours=round(delta_h, 1),
+                duration_days=int(delta_h / 24),
+            ))
+            total_hours += delta_h
+
+    # Tri par duree desc + limit
+    gaps.sort(key=lambda g: -g.duration_hours)
+    return DataGapsResponse(
+        min_hours=min_hours,
+        total_gaps=len(gaps),
+        total_missing_hours=int(total_hours),
+        gaps=gaps[:limit],
+    )
+
+
+class WorkDetectResponse(BaseModel):
+    detected: bool
+    lat: float | None
+    lng: float | None
+    visit_count: int
+    confidence: float  # 0-1
+    weekday_visits: int
+    daytime_visits: int  # 9h-17h local
+    label: str | None  # ex "Levis · 87 visites en semaine 9h-17h"
+
+
+@router.get(
+    "/auto-detect-work",
+    response_model=WorkDetectResponse,
+    summary="Detecte le lieu de travail probable depuis les patterns weekday-daytime",
+)
+async def auto_detect_work(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    months_back: int = Query(default=6, ge=1, le=60),
+) -> WorkDetectResponse:
+    from datetime import timedelta
+    latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one_or_none()
+    if latest is None:
+        return WorkDetectResponse(detected=False, lat=None, lng=None,
+                                  visit_count=0, confidence=0.0, weekday_visits=0,
+                                  daytime_visits=0, label=None)
+    cutoff = latest - timedelta(days=months_back * 30)
+
+    visits = list((
+        await db.execute(
+            select(LocationVisit)
+            .where(LocationVisit.start_time >= cutoff)
+        )
+    ).scalars().all())
+
+    # Filtre : weekday + heures 8-17h (apres conversion tz_offset si dispo)
+    bins: dict[tuple[float, float], list[Any]] = {}
+    for v in visits:
+        # Heure locale approchee
+        if v.tz_offset_minutes:
+            local = v.start_time + timedelta(minutes=v.tz_offset_minutes)
+        else:
+            local = v.start_time
+        # Lundi=0 ... Dimanche=6
+        if local.weekday() >= 5:
+            continue  # weekend
+        if local.hour < 8 or local.hour >= 17:
+            continue  # nuit/soir
+        # Skip HOME et apparentes (pas du travail)
+        if v.semantic_type in ("HOME", "INFERRED_HOME"):
+            continue
+
+        lat_b = round(float(v.lat), 3)  # bins ~111m
+        lng_b = round(float(v.lng), 3)
+        bins.setdefault((lat_b, lng_b), []).append(v)
+
+    if not bins:
+        return WorkDetectResponse(detected=False, lat=None, lng=None,
+                                  visit_count=0, confidence=0.0,
+                                  weekday_visits=0, daytime_visits=0, label=None)
+
+    # Cluster le plus dense
+    densest_key = max(bins.keys(), key=lambda k: len(bins[k]))
+    cluster = bins[densest_key]
+    cluster_size = len(cluster)
+    total_filtered = sum(len(b) for b in bins.values())
+    confidence = round(cluster_size / total_filtered, 3) if total_filtered else 0
+    avg_lat = sum(float(v.lat) for v in cluster) / cluster_size
+    avg_lng = sum(float(v.lng) for v in cluster) / cluster_size
+
+    return WorkDetectResponse(
+        detected=True, lat=round(avg_lat, 6), lng=round(avg_lng, 6),
+        visit_count=cluster_size, confidence=confidence,
+        weekday_visits=cluster_size, daytime_visits=cluster_size,
+        label=f"{cluster_size} visites en semaine 8-17h sur {months_back}m, confiance {int(confidence*100)}%",
+    )
+
+
+class YearMonthlyData(BaseModel):
+    year: int
+    monthly_visits: list[int]  # 12 valeurs jan..dec
+
+
+class YearComparisonResponse(BaseModel):
+    years: list[YearMonthlyData]
+
+
+@router.get(
+    "/year-comparison",
+    response_model=YearComparisonResponse,
+    summary="Visites par mois pour comparaison annee/annee",
+)
+async def get_year_comparison(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> YearComparisonResponse:
+    is_sq = await _is_sqlite(db)
+    if is_sq:
+        year_expr = func.cast(func.strftime("%Y", LocationVisit.start_time), sa.Integer)
+        month_expr = func.cast(func.strftime("%m", LocationVisit.start_time), sa.Integer)
+    else:
+        year_expr = func.extract("year", LocationVisit.start_time)
+        month_expr = func.extract("month", LocationVisit.start_time)
+
+    rows = list((
+        await db.execute(
+            select(year_expr.label("y"), month_expr.label("m"), func.count().label("n"))
+            .group_by(year_expr, month_expr)
+            .order_by(year_expr, month_expr)
+        )
+    ).all())
+
+    years_map: dict[int, list[int]] = {}
+    for r in rows:
+        y = int(r.y)
+        m = int(r.m)
+        if y not in years_map:
+            years_map[y] = [0] * 12
+        years_map[y][m - 1] = r.n
+
+    years = [YearMonthlyData(year=y, monthly_visits=v) for y, v in sorted(years_map.items())]
+    return YearComparisonResponse(years=years)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reverse geocoding (Nominatim avec cache memoire)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 @router.get(
     "/reverse-geocode",
     response_model=ReverseGeocodeResponse,
