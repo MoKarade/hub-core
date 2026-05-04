@@ -138,6 +138,52 @@ CREATE TABLE investment_positions (      -- Snapshots mensuels Disnat
     currency CHAR(3),                -- 'CAD' ou 'USD'
     portfolio_pct NUMERIC(5,2)
 );
+
+-- Phase 2 : Localisation Google Maps Timeline (depuis 2013) -----------------
+
+CREATE TABLE location_visits (       -- Lieux visites avec semantic type
+    id UUID PRIMARY KEY,
+    start_time TIMESTAMPTZ,          -- en UTC
+    end_time TIMESTAMPTZ,
+    tz_offset_minutes INT,           -- offset local au moment de la visite
+    lat NUMERIC(10,7),               -- latitude en degres decimaux
+    lng NUMERIC(10,7),               -- longitude en degres decimaux
+    place_id TEXT,                   -- Google place_id si dispo
+    semantic_type TEXT,              -- 'HOME', 'INFERRED_HOME', 'WORK', 'INFERRED_WORK',
+                                     -- 'SEARCHED_ADDRESS', 'ALIASED_LOCATION', 'UNKNOWN'
+    probability NUMERIC(5,4),        -- confiance Google [0,1]
+    source TEXT                      -- 'google_timeline'
+);
+
+CREATE TABLE location_activities (   -- Trajets / segments de transport
+    id UUID PRIMARY KEY,
+    start_time TIMESTAMPTZ,
+    end_time TIMESTAMPTZ,
+    activity_type TEXT,              -- 'IN_PASSENGER_VEHICLE', 'WALKING', 'FLYING',
+                                     -- 'IN_TRAIN', 'IN_SUBWAY', 'IN_BUS', 'CYCLING',
+                                     -- 'IN_VEHICLE', 'RUNNING', 'SKIING'
+    distance_meters NUMERIC,         -- distance parcourue en metres
+    probability NUMERIC(5,4),
+    start_lat NUMERIC(10,7), start_lng NUMERIC(10,7),
+    end_lat NUMERIC(10,7),   end_lng NUMERIC(10,7),
+    source TEXT
+);
+
+CREATE TABLE location_points (       -- Points GPS bruts (timelinePath)
+    id UUID PRIMARY KEY,
+    timestamp_utc TIMESTAMPTZ,
+    latitude NUMERIC(10,7),
+    longitude NUMERIC(10,7),
+    accuracy_m INT,
+    altitude_m INT,
+    activity_type TEXT,              -- legacy lowercase pour ancien format
+    source TEXT,                     -- 'google_timeline' uniquement actuellement
+    source_file TEXT
+);
+-- Marc habite Levis QC (lat=46.738, lng=-71.243) depuis 2024.
+-- Il a vecu en France (Hauts-de-France ~50.6,2.98) avant.
+-- Pour detecter "voyages a l'etranger", filtrer les visites a >100km du domicile.
+-- Pour "trajets en avion", filter activity_type='FLYING' et distance_meters > 200000.
 """
 
 _FEW_SHOT_EXAMPLES = """\
@@ -168,6 +214,52 @@ Q: Combien j'ai recu en paie en fevrier 2026 ?
 SQL: SELECT SUM(credit) AS total FROM transactions
      WHERE transaction_date BETWEEN '2026-02-01' AND '2026-02-29'
        AND description ILIKE '%paie%';
+
+-- Localisation : exemples ----------------------------------------------------
+
+Q: Combien de fois je suis alle en France en 2024 ?
+SQL: SELECT COUNT(DISTINCT DATE(start_time)) AS jours_en_france
+     FROM location_visits
+     WHERE start_time BETWEEN '2024-01-01' AND '2024-12-31'
+       AND lat BETWEEN 41 AND 51
+       AND lng BETWEEN -5 AND 9;
+
+Q: Combien de km j'ai parcourus en avion au total ?
+SQL: SELECT SUM(distance_meters) / 1000 AS km_total, COUNT(*) AS nb_vols
+     FROM location_activities
+     WHERE activity_type = 'FLYING';
+
+Q: Quels sont mes 5 voyages les plus longs hors du Quebec ?
+SQL: WITH away AS (
+       SELECT DATE(start_time) AS jour, lat, lng
+       FROM location_visits
+       WHERE NOT (lat BETWEEN 45 AND 49 AND lng BETWEEN -75 AND -69)  -- hors QC
+         AND semantic_type IS DISTINCT FROM 'HOME'
+     )
+     SELECT jour, COUNT(*) AS nb_visites
+     FROM away
+     GROUP BY jour
+     ORDER BY nb_visites DESC
+     LIMIT 5;
+
+Q: Combien de temps j'ai passe au travail en mars 2024 ?
+SQL: SELECT SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 3600) AS heures
+     FROM location_visits
+     WHERE start_time BETWEEN '2024-03-01' AND '2024-03-31'
+       AND semantic_type IN ('WORK', 'INFERRED_WORK');
+
+Q: Ou etais-je le 15 aout 2024 ?
+SQL: SELECT start_time, end_time, lat, lng, semantic_type
+     FROM location_visits
+     WHERE start_time::date = '2024-08-15'
+     ORDER BY start_time;
+
+Q: Combien j'ai marche en 2024 ?
+SQL: SELECT SUM(distance_meters) / 1000 AS km, COUNT(*) AS sessions,
+            SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS minutes
+     FROM location_activities
+     WHERE activity_type IN ('WALKING', 'RUNNING')
+       AND start_time BETWEEN '2024-01-01' AND '2024-12-31';
 """
 
 _SYSTEM_PROMPT = (
@@ -206,6 +298,9 @@ _ALLOWED_TABLES = {
     "credit_card_transactions",
     "investment_transactions",
     "investment_positions",
+    "location_visits",
+    "location_activities",
+    "location_points",
 }
 
 _FORBIDDEN_KEYWORDS = re.compile(

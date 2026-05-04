@@ -429,7 +429,7 @@ async def list_location_points(
     max_lng: float | None = Query(default=None, ge=-180, le=180),
     activity_type: str | None = Query(default=None),
     source: str | None = Query(default=None),
-    limit: int = Query(default=500, ge=1, le=10000),
+    limit: int = Query(default=500, ge=1, le=500000),
     offset: int = Query(default=0, ge=0),
 ) -> list[LocationPoint]:
     q = (
@@ -491,7 +491,7 @@ async def list_visits(
     max_lat: float | None = Query(default=None, ge=-90, le=90),
     min_lng: float | None = Query(default=None, ge=-180, le=180),
     max_lng: float | None = Query(default=None, ge=-180, le=180),
-    limit: int = Query(default=200, ge=1, le=5000),
+    limit: int = Query(default=200, ge=1, le=500000),
     offset: int = Query(default=0, ge=0),
 ) -> list[LocationVisit]:
     q = (
@@ -1094,29 +1094,78 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 )
 async def get_trips(
     db: Annotated[AsyncSession, Depends(get_db)],
-    home_lat: float | None = Query(default=None, description="Lat domicile (sinon centroid HOME)"),
-    home_lng: float | None = Query(default=None, description="Lng domicile (sinon centroid HOME)"),
+    home_lat: float | None = Query(default=None, description="Lat domicile (sinon auto-detect)"),
+    home_lng: float | None = Query(default=None, description="Lng domicile (sinon auto-detect)"),
     home_radius_km: float = Query(default=50, ge=1, le=500, description="Rayon home en km"),
     min_duration_hours: int = Query(default=24, ge=6, le=720, description="Duree minimum d'un voyage"),
     min_distance_km: float = Query(default=100, ge=10, le=10000, description="Distance min depuis home"),
+    home_recency_months: int | None = Query(
+        default=24, ge=1, le=240,
+        description="Pour auto-detect home : on regarde les HOME visits des N derniers mois "
+                    "(0 ou null = tout l'historique). Defaut 24 mois pour gerer les demenagements.",
+    ),
 ) -> TripsResponse:
     # 1. Determine home reference si pas fourni
     if home_lat is None or home_lng is None:
-        home_visits = list((
-            await db.execute(
-                select(LocationVisit.lat, LocationVisit.lng)
-                .where(LocationVisit.semantic_type == "HOME")
-                .limit(1000)
-            )
-        ).all())
+        # Filtre par recence pour gerer les demenagements
+        from datetime import timedelta
+        q = (
+            select(LocationVisit.lat, LocationVisit.lng, LocationVisit.start_time)
+            .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+            .order_by(LocationVisit.start_time.desc())
+            .limit(5000)
+        )
+        if home_recency_months and home_recency_months > 0:
+            cutoff = datetime.now(UTC) - timedelta(days=home_recency_months * 30)
+            # Mais on n'a peut-etre pas de donnees recentes : on prend les N mois precedant
+            # la DERNIERE visite enregistree, pas par rapport a aujourd'hui.
+            latest = (
+                await db.execute(
+                    select(func.max(LocationVisit.start_time))
+                    .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+                )
+            ).scalar_one_or_none()
+            if latest:
+                cutoff = latest - timedelta(days=home_recency_months * 30)
+                q = q.where(LocationVisit.start_time >= cutoff)
+
+        home_visits = list((await db.execute(q)).all())
+
+        # Si trop peu de HOME recents, on retombe sur tout l'historique
+        if len(home_visits) < 5:
+            home_visits = list((
+                await db.execute(
+                    select(LocationVisit.lat, LocationVisit.lng, LocationVisit.start_time)
+                    .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+                    .order_by(LocationVisit.start_time.desc())
+                    .limit(5000)
+                )
+            ).all())
+
         if not home_visits:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "Aucune visite HOME — fournis home_lat/home_lng en params ou utilise /retag",
             )
-        # Centroid
-        h_lat = sum(float(r.lat) for r in home_visits) / len(home_visits)
-        h_lng = sum(float(r.lng) for r in home_visits) / len(home_visits)
+        # ── Cluster par grille 0.1° (~11km) → cellule la plus dense = home ──
+        # Robuste si Marc a habite plusieurs villes (centroid moyen serait dans l'Atlantique).
+        bins: dict[tuple[float, float], list[tuple[float, float]]] = {}
+        for r in home_visits:
+            lat, lng = float(r.lat), float(r.lng)
+            key = (round(lat, 1), round(lng, 1))
+            bins.setdefault(key, []).append((lat, lng))
+        densest_key = max(bins.keys(), key=lambda k: len(bins[k]))
+        cluster = bins[densest_key]
+        h_lat = sum(p[0] for p in cluster) / len(cluster)
+        h_lng = sum(p[1] for p in cluster) / len(cluster)
+        logger.info(
+            "trips_home_cluster",
+            cluster_size=len(cluster),
+            total_home_visits=len(home_visits),
+            recency_months=home_recency_months,
+            h_lat=round(h_lat, 4),
+            h_lng=round(h_lng, 4),
+        )
     else:
         h_lat, h_lng = home_lat, home_lng
 
