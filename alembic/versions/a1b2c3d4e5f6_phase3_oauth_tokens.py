@@ -11,8 +11,6 @@ Phase 3+ : permettra l'ingest Gmail/Photos/Drive/Calendar/Fit/People/Tasks.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
-
 from alembic import op
 
 # revision identifiers
@@ -32,7 +30,7 @@ def upgrade() -> None:
         sa.Column("access_token_encrypted", sa.LargeBinary(), nullable=False),
         sa.Column("refresh_token_encrypted", sa.LargeBinary(), nullable=True),
         sa.Column("token_expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("scopes", postgresql.ARRAY(sa.Text()), nullable=False, server_default="{}"),
+        sa.Column("scopes", sa.Text(), nullable=False, server_default=""),  # JSON string on SQLite, ARRAY on PG
         sa.Column("token_type", sa.String(length=20), nullable=False, server_default="Bearer"),
         sa.Column("last_refreshed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),

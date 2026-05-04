@@ -15,6 +15,7 @@ from src.db.models.health_metric import HealthMetric
 from src.db.models.investment_position import InvestmentPosition
 from src.db.models.investment_transaction import InvestmentTransaction
 from src.db.models.location_point import LocationPoint
+from src.db.models.location_visit import LocationActivity, LocationVisit
 from src.db.models.oauth_token import OAuthToken
 from src.db.models.photo import Photo
 from src.db.models.task import Task
@@ -29,6 +30,8 @@ __all__ = [
     "InvestmentTransaction",
     "InvestmentPosition",
     "LocationPoint",
+    "LocationVisit",
+    "LocationActivity",
     "OAuthToken",
     "Email",
     "CalendarEvent",
