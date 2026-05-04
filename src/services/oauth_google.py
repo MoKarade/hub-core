@@ -304,21 +304,46 @@ async def get_valid_access_token(
 ) -> str:
     """Retourne un access_token valide (refresh automatique si expiré).
 
-    Lève RuntimeError si :
-      - pas de token pour ce service
-      - token révoqué
-      - refresh échoue (re-consent nécessaire)
+    Stratégie de lookup (1er trouvé gagne) :
+      1. Token "service" spécifique (utilisable et non révoqué)
+      2. Fallback sur token "all" (scope unifié) qui inclut tous les services
+
+    Pourquoi le fallback "all" :
+      - Si Marc fait un consent global (scope=all), Google invalide les
+        refresh_tokens des consents par service. Les anciens tokens
+        deviennent révoqués après le 1er refresh raté → mais le token "all"
+        couvre toujours tous les services.
+      - Avec ce fallback, Marc ne reconnecte qu'UNE FOIS pour tout.
+
+    Lève RuntimeError si aucun des deux tokens n'est utilisable
+    (re-consent requis).
     """
+    # Cherche le token spécifique au service ET le token "all" en une seule query
     stmt = select(OAuthToken).where(
         OAuthToken.provider == "google",
-        OAuthToken.service == service,
         OAuthToken.user_email == user_email,
+        OAuthToken.service.in_([service, "all"]),
     )
-    token = (await db.execute(stmt)).scalar_one_or_none()
+    candidates = (await db.execute(stmt)).scalars().all()
+    if not candidates:
+        raise RuntimeError(
+            f"Aucun token Google pour service={service}. Connectez-vous via /settings."
+        )
+
+    # Priorité au service spécifique (s'il est utilisable), sinon "all"
+    token: OAuthToken | None = None
+    by_service: dict[str, OAuthToken] = {t.service: t for t in candidates}
+    for try_service in (service, "all"):
+        candidate = by_service.get(try_service)
+        if candidate and not candidate.is_revoked:
+            token = candidate
+            break
+
     if not token:
-        raise RuntimeError(f"Aucun token Google pour service={service}")
-    if token.is_revoked:
-        raise RuntimeError(f"Token Google révoqué pour service={service}")
+        raise RuntimeError(
+            f"Tous les tokens Google sont révoqués pour service={service}. "
+            "Reconnectez-vous via /settings (scope=all recommandé)."
+        )
 
     # Si pas expiré (avec marge 60s), on retourne directement.
     # SQLite stocke datetime naive : on assume UTC si tzinfo manque.

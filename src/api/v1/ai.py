@@ -210,7 +210,10 @@ _ALLOWED_TABLES = {
 
 _FORBIDDEN_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|"
-    r"COPY|VACUUM|REINDEX|CLUSTER|EXPLAIN|ANALYZE|LOCK)\b",
+    r"COPY|VACUUM|REINDEX|CLUSTER|EXPLAIN|ANALYZE|LOCK|"
+    r"MERGE|CALL|DO|LOAD|"
+    r"SET\s+ROLE|SET\s+SESSION|"
+    r"pg_read_file|pg_ls_dir|pg_sleep|pg_terminate_backend|dblink)\b",
     re.IGNORECASE,
 )
 
@@ -220,6 +223,13 @@ def _validate_sql(sql: str) -> str:
     cleaned = sql.strip().rstrip(";").strip()
     if not cleaned:
         raise ValueError("SQL vide")
+    # Strip les commentaires SQL (line + block) AVANT validation, sinon le LLM
+    # pourrait planquer des mots-cles interdits dedans (ex: "-- DROP TABLE").
+    cleaned = re.sub(r"--[^\n]*", "", cleaned)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = cleaned.strip().rstrip(";").strip()
+    if not cleaned:
+        raise ValueError("SQL vide apres suppression des commentaires")
     # Mot-cles interdits VERIFIES EN PREMIER : message d erreur plus parlant
     # quand le LLM genere un INSERT/DELETE/etc.
     if _FORBIDDEN_KEYWORDS.search(cleaned):
@@ -228,9 +238,10 @@ def _validate_sql(sql: str) -> str:
         raise ValueError("Le SQL doit commencer par SELECT ou WITH")
 
     # Extraction des noms de CTE pour les ajouter aux tables autorisees.
-    # Pattern : "WITH foo AS (...)" ou ", bar AS (...)" en cascade.
+    # Pattern : "WITH [RECURSIVE] foo AS (...)" ou ", bar AS (...)" en cascade.
     cte_names = {
-        m.group(1).lower() for m in re.finditer(r"\bWITH\s+(\w+)\s+AS\b", cleaned, re.IGNORECASE)
+        m.group(1).lower()
+        for m in re.finditer(r"\bWITH\s+(?:RECURSIVE\s+)?(\w+)\s+AS\b", cleaned, re.IGNORECASE)
     }
     cte_names |= {
         m.group(1).lower() for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, re.IGNORECASE)

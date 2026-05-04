@@ -16,6 +16,7 @@ from src.api.v1 import (
     oauth,
     osint,
     photos,
+    security,
     tasks,
     youtube,
 )
@@ -36,3 +37,4 @@ router.include_router(drive.router)
 router.include_router(contacts.router)
 router.include_router(tasks.router)
 router.include_router(youtube.router)
+router.include_router(security.router)

@@ -360,6 +360,14 @@ async def photo_thumbnail(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo introuvable")
 
     access_token = await _resolve_token(db, photo.user_email)
+    # Validation anti-SSRF : refuse tout host non Google avant d'emettre la requete.
+    from src.services.photo_gps import ALLOWED_PHOTO_HOSTS
+
+    if not photo.base_url.startswith(ALLOWED_PHOTO_HOSTS):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"base_url not in allowed Google hosts: {photo.base_url[:80]}",
+        )
     # Picker baseUrl + suffix pour resize : =w{size}-h{size}-c (crop centered)
     url = f"{photo.base_url}=w{size}-h{size}-c"
     try:

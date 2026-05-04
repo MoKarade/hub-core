@@ -68,8 +68,9 @@ class TestInvalidNonSelect:
             _validate_sql("SET search_path = public")
 
     def test_pure_function_call(self):
-        # Appel de fonction sans SELECT ni mot-clé interdit
-        with pytest.raises(ValueError, match="SELECT"):
+        # pg_sleep est maintenant dans la liste des mots-clés interdits (DoS).
+        # Avant ce fix, ça tombait sur le check SELECT ; maintenant, c'est rejeté plus tôt.
+        with pytest.raises(ValueError, match="interdit"):
             _validate_sql("pg_sleep(1)")
 
 

@@ -18,6 +18,21 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     # Refuse de démarrer en prod si la conf n'est pas sécurisée (ex: secret_key=changeme)
     settings.validate_for_production()
+    # En prod, exige que Cloudflare Access soit configuré (sinon le hub est exposé sans auth).
+    if settings.is_production and (
+        not settings.cf_access_team_domain or not settings.cf_access_audience
+    ):
+        raise RuntimeError(
+            "Production mode requires Cloudflare Access configured "
+            "(cf_access_team_domain + cf_access_audience). "
+            "Set them in .env or run with app_env=dev"
+        )
+    # En prod, refuse CORS '*' avec credentials (CSRF risk).
+    if settings.is_production and settings.cors_allowed_origins.strip() == "*":
+        raise RuntimeError(
+            "Production mode forbids cors_allowed_origins='*' (CSRF risk avec credentials). "
+            "Liste les origines explicitement dans .env."
+        )
     logger.info("hub_startup", env=settings.app_env, app=settings.app_name)
     yield
     logger.info("hub_shutdown")

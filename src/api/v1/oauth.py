@@ -243,3 +243,44 @@ async def oauth_google_revoke(
     await db.commit()
 
     return {"status": "revoked", "service": service}
+
+
+@router.post("/cleanup")
+async def oauth_cleanup(db: AsyncSession = Depends(get_db)):
+    """Supprime de la DB les tokens révoqués qui ont un fallback "all" valide.
+
+    Utile après un consent "scope=all" : les anciens tokens par service
+    deviennent automatiquement obsolètes (Google invalide leurs refresh_tokens
+    quand on consent un scope plus large). Cet endpoint fait le ménage pour
+    désencombrer /v1/oauth/status.
+
+    Garde : on supprime UNIQUEMENT si un token "all" non-révoqué existe pour
+    le même user_email (sinon on perd l'info que le service a été connecté).
+    """
+    from sqlalchemy import delete
+
+    # 1. Récupère les tokens "all" actifs par user
+    stmt_all = select(OAuthToken).where(
+        OAuthToken.provider == "google",
+        OAuthToken.service == "all",
+        OAuthToken.revoked_at.is_(None),
+    )
+    all_tokens = (await db.execute(stmt_all)).scalars().all()
+    users_with_all = {t.user_email for t in all_tokens}
+
+    if not users_with_all:
+        return {"deleted": 0, "reason": "Aucun token 'all' actif pour fallback."}
+
+    # 2. Supprime les tokens service-spécifiques révoqués pour ces users
+    stmt_del = delete(OAuthToken).where(
+        OAuthToken.provider == "google",
+        OAuthToken.service != "all",
+        OAuthToken.revoked_at.is_not(None),
+        OAuthToken.user_email.in_(users_with_all),
+    )
+    result = await db.execute(stmt_del)
+    await db.commit()
+
+    deleted = result.rowcount or 0
+    logger.info("oauth_cleanup", deleted=deleted, users=list(users_with_all))
+    return {"deleted": deleted, "fallback_users": sorted(users_with_all)}

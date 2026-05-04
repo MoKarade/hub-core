@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -231,18 +231,22 @@ class DriveFileFull(DriveFileItem):
     """IDs parents separes par virgule (text serialise)."""
 
 
+# Cache root folder IDs avec TTL (1h) — invalide auto si Marc change de compte Google
+_ROOT_FOLDER_CACHE: dict[str, tuple[str, datetime]] = {}
+_ROOT_FOLDER_TTL_SECONDS = 3600
+
+
 async def _get_root_folder_id(
     db: AsyncSession, user_email: str = "marc.richard4@gmail.com"
 ) -> str | None:
     """Recupere le vrai ID du dossier racine Drive (alias 'root' -> ID reel).
     Drive v3 about n'a PAS rootFolderId, faut faire files.get('root').
-    Cache en memoire process apres premier call.
+    Cache en memoire process avec TTL 1h.
     """
-    if not hasattr(_get_root_folder_id, "_cache"):
-        _get_root_folder_id._cache = {}  # type: ignore
-    cache = _get_root_folder_id._cache  # type: ignore
-    if user_email in cache and cache[user_email]:
-        return cache[user_email]
+    now = datetime.now(UTC)
+    cached = _ROOT_FOLDER_CACHE.get(user_email)
+    if cached and (now - cached[1]).total_seconds() < _ROOT_FOLDER_TTL_SECONDS:
+        return cached[0]
     try:
         access_token = await _resolve_token(db, user_email)
     except HTTPException:
@@ -258,7 +262,7 @@ async def _get_root_folder_id(
             data = r.json()
             root_id = data.get("id")
             if root_id:
-                cache[user_email] = root_id
+                _ROOT_FOLDER_CACHE[user_email] = (root_id, now)
                 logger.info("drive_root_folder_id resolved: %s", root_id)
             return root_id
     except (httpx.HTTPStatusError, httpx.RequestError) as e:

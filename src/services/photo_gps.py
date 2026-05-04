@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 NOMINATIM_API = "https://nominatim.openstreetmap.org/reverse"
 
+# Hosts Google autorises pour les fetch de bytes photos (anti-SSRF).
+ALLOWED_PHOTO_HOSTS = (
+    "https://lh3.googleusercontent.com/",
+    "https://photoslibrary.googleapis.com/",
+)
+
+# Plafond de taille des bytes photo (anti-DoS RAM).
+MAX_PHOTO_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 def _dms_to_decimal(dms: list[Any], ref: str) -> float | None:
     """Convertit DMS (degres, minutes, secondes) en decimal signe.
@@ -45,11 +54,24 @@ async def download_photo_bytes(base_url: str, access_token: str) -> bytes:
     Le tradeoff : photos peuvent peser 5-15MB chacune, mais c'est le seul moyen
     de recuperer les coords.
     """
+    # Validation anti-SSRF : refuse tout host non Google avant d'emettre la requete.
+    if not base_url.startswith(ALLOWED_PHOTO_HOSTS):
+        raise ValueError(f"base_url not in allowed Google hosts: {base_url[:80]}")
     url = f"{base_url}=d"
+    # Stream + plafond pour eviter qu'une photo enorme bouffe toute la RAM.
+    buf = bytearray()
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
-        r.raise_for_status()
-        return r.content
+        async with client.stream(
+            "GET", url, headers={"Authorization": f"Bearer {access_token}"}
+        ) as r:
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes(chunk_size=65536):
+                buf.extend(chunk)
+                if len(buf) > MAX_PHOTO_BYTES:
+                    raise ValueError(
+                        f"Photo too large (>{MAX_PHOTO_BYTES // 1024 // 1024}MB): {url[:80]}"
+                    )
+    return bytes(buf)
 
 
 def extract_gps_from_bytes(

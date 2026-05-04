@@ -77,12 +77,27 @@ def _find_tool(tool: str) -> str | None:
     return shutil.which(tool)
 
 
+def _minimal_env() -> dict[str, str]:
+    """Env minimal pour subprocess OSINT — pas de leak des secrets app.
+
+    Ne passe que PATH (nécessaire pour résoudre les binaires), HOME, et les
+    locales. PAS SECRET_KEY, GOOGLE_OAUTH_CLIENT_SECRET, DATABASE_URL etc.
+    Si une version compromise de holehe/sherlock arrive via pip, elle ne peut
+    pas exfiltrer les secrets de l'app.
+    """
+    import os
+
+    keep = ("PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "LANG", "LC_ALL", "PYTHONIOENCODING")
+    return {k: os.environ[k] for k in keep if k in os.environ}
+
+
 async def _run_subprocess(cmd: list[str], timeout: float = 120.0) -> tuple[int, str, str]:
     """Run un subprocess async avec timeout. Retourne (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_minimal_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

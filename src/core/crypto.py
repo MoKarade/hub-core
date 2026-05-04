@@ -22,6 +22,11 @@ def _get_fernet() -> Fernet:
     """Dérive une clé Fernet depuis le secret_key applicatif (SHA-256 → base64).
 
     Cached : un seul Fernet par process. Si secret_key change, app restart requis.
+
+    NOTE: SHA-256 simple (pas PBKDF2) car le secret_key est déjà à haute entropie
+    (32+ chars random). Migration vers PBKDF2 nécessiterait re-chiffrer tous les
+    tokens existants (Marc devrait reconnecter tous les services Google).
+    Acceptable pour single-user local-first, à reconsidérer si exposition externe.
     """
     secret = get_settings().secret_key.encode("utf-8")
     if len(secret) < 8:
