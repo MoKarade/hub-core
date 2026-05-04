@@ -1779,15 +1779,24 @@ class GeocodeProgressResponse(BaseModel):
 
 
 async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
-    """Worker async qui parcourt les visites et geocode les cellules manquantes."""
+    """Worker async qui parcourt les visites et geocode les cellules manquantes.
+
+    PRIORITE = visites recentes en premier (start_time DESC). Garantit que les
+    lieux ou Marc va aujourd'hui (Quebec) sont geocodes avant les anciens
+    (France ou il vivait avant 2024).
+    """
     import asyncio
     import time
     import httpx
 
     try:
         async with SessionLocal() as db:
-            # 1. Trouver les cellules uniques NON-cachees
-            q = select(LocationVisit.lat, LocationVisit.lng, LocationVisit.semantic_type)
+            # 1. Trouver les cellules uniques NON-cachees, triees par recency desc
+            q = (
+                select(LocationVisit.lat, LocationVisit.lng,
+                       LocationVisit.semantic_type, LocationVisit.start_time)
+                .order_by(LocationVisit.start_time.desc())
+            )
             if only_unknown:
                 q = q.where(LocationVisit.semantic_type == "UNKNOWN")
             visits = list((await db.execute(q)).all())
@@ -1796,9 +1805,10 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
             for v in visits:
                 lat_e4 = round(float(v.lat) * 10000)
                 lng_e4 = round(float(v.lng) * 10000)
+                # setdefault preserve l'ordre de premiere apparition = recent en 1er
                 cells.setdefault((lat_e4, lng_e4), (float(v.lat), float(v.lng)))
 
-            # Filtrer celles deja cachees
+            # Filtrer celles deja cachees (mais preserve l'ordre)
             cached_rows = list((
                 await db.execute(select(LocationAddress.lat_e4, LocationAddress.lng_e4))
             ).all())
@@ -1979,6 +1989,178 @@ async def geocode_progress() -> GeocodeProgressResponse:
 async def geocode_stop() -> dict:
     _GEOCODE_STATE["stop_requested"] = True
     return {"stopped": True, "was_running": _GEOCODE_STATE["running"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI proactive insights (faits intéressants calculés à la volée)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Insight(BaseModel):
+    title: str
+    description: str
+    icon: str  # nom lucide
+    color: str  # hex
+    metric: str | None = None  # nombre cle a afficher en grand
+    metric_unit: str | None = None
+    cta_question: str | None = None  # question proposable a l'IA
+
+
+class InsightsResponse(BaseModel):
+    insights: list[Insight]
+    generated_at: datetime
+
+
+@router.get(
+    "/insights",
+    response_model=InsightsResponse,
+    summary="Faits interessants auto-detectes (AI proactive)",
+)
+async def get_insights(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> InsightsResponse:
+    from datetime import timedelta as _td
+
+    insights: list[Insight] = []
+    now = datetime.now(UTC)
+
+    def _aware(dt: datetime) -> datetime:
+        """SQLite renvoie des datetimes naive ; on force UTC."""
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+    # 1. Voyages cette annee vs annee derniere
+    this_year = now.year
+    last_year = this_year - 1
+    is_sq = await _is_sqlite(db)
+    year_expr = func.cast(func.strftime("%Y", LocationVisit.start_time), sa.Integer) if is_sq else func.extract("year", LocationVisit.start_time)
+    year_counts = list((
+        await db.execute(
+            select(year_expr.label("y"), func.count().label("n"))
+            .where(year_expr.in_([this_year, last_year]))
+            .group_by(year_expr)
+        )
+    ).all())
+    counts_by_year = {int(r.y): r.n for r in year_counts}
+    if counts_by_year.get(this_year) and counts_by_year.get(last_year):
+        diff_pct = round((counts_by_year[this_year] - counts_by_year[last_year])
+                         / counts_by_year[last_year] * 100)
+        insights.append(Insight(
+            title=f"Evolution {this_year} vs {last_year}",
+            description=f"{counts_by_year[this_year]:,} visites en {this_year} contre "
+                        f"{counts_by_year[last_year]:,} en {last_year}".replace(",", " "),
+            icon="trending-up" if diff_pct >= 0 else "trending-down",
+            color="#5cdb95" if diff_pct >= 0 else "#fbbf24",
+            metric=f"{'+' if diff_pct >= 0 else ''}{diff_pct}",
+            metric_unit="%",
+            cta_question=f"Compare mes visites {this_year} et {last_year} en detail",
+        ))
+
+    # 2. Pas alle chez maman (HOME) depuis X jours ?
+    last_home = (await db.execute(
+        select(func.max(LocationVisit.start_time))
+        .where(LocationVisit.semantic_type.in_(["HOME", "INFERRED_HOME"]))
+    )).scalar_one_or_none()
+    if last_home:
+        last_home_aw = _aware(last_home)
+        days_since = (now - last_home_aw).days
+        if days_since >= 3:
+            insights.append(Insight(
+                title="Loin de chez toi",
+                description=f"Derniere visite HOME : il y a {days_since} jour"
+                            f"{'s' if days_since > 1 else ''} ({last_home_aw.date()})",
+                icon="home",
+                color="#5fb3f4" if days_since < 14 else "#ffb84d",
+                metric=str(days_since),
+                metric_unit="j",
+            ))
+
+    # 3. Anniversaire d'un voyage (un voyage il y a exactement 1, 2, 5, 10 ans)
+    today_md = (now.month, now.day)
+    visits_anniv = list((
+        await db.execute(
+            select(LocationVisit)
+            .where(LocationVisit.semantic_type == "SEARCHED_ADDRESS")
+            .order_by(LocationVisit.start_time.desc())
+            .limit(2000)
+        )
+    ).scalars().all())
+    for v in visits_anniv:
+        years_ago = now.year - v.start_time.year
+        if years_ago in (1, 2, 5, 10) and (v.start_time.month, v.start_time.day) == today_md:
+            insights.append(Insight(
+                title=f"Souvenir : il y a {years_ago} an{'s' if years_ago > 1 else ''}",
+                description=f"Le {v.start_time.date()} tu etais ici "
+                            f"({float(v.lat):.3f}, {float(v.lng):.3f})",
+                icon="calendar-clock",
+                color="#c084fc",
+                metric=f"{years_ago}",
+                metric_unit=f"an{'s' if years_ago > 1 else ''}",
+                cta_question=f"Que faisais-je le {v.start_time.date().isoformat()} ?",
+            ))
+            break  # un anniversaire suffit
+
+    # 4. Recordeur de la semaine (top destination 7 derniers jours)
+    week_ago = now - _td(days=7)
+    top_week = list((
+        await db.execute(
+            select(
+                func.cast(LocationVisit.lat, sa.Float).label("lat"),
+                func.cast(LocationVisit.lng, sa.Float).label("lng"),
+                func.count().label("n"),
+            )
+            .where(LocationVisit.start_time >= week_ago)
+            .group_by(LocationVisit.lat, LocationVisit.lng)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+    ).all())
+    if top_week:
+        # Cluster en cellules 0.001
+        bins: dict[tuple[float, float], int] = {}
+        for row in top_week:
+            key = (round(row.lat, 3), round(row.lng, 3))
+            bins[key] = bins.get(key, 0) + row.n
+        if bins:
+            top_key = max(bins.keys(), key=lambda k: bins[k])
+            top_n = bins[top_key]
+            insights.append(Insight(
+                title="Lieu le plus visité cette semaine",
+                description=f"{top_n} visite{'s' if top_n > 1 else ''} a "
+                            f"{top_key[0]:.3f}, {top_key[1]:.3f}",
+                icon="map-pin",
+                color="#5cdb95",
+                metric=str(top_n),
+                metric_unit="visites",
+            ))
+
+    # 5. Distance ce mois vs mois dernier
+    month_start = now.replace(day=1, hour=0, minute=0, second=0)
+    last_month_start = (month_start - _td(days=1)).replace(day=1)
+    last_month_end = month_start - _td(seconds=1)
+
+    dist_this = (await db.execute(
+        select(func.coalesce(func.sum(LocationActivity.distance_meters), 0))
+        .where(LocationActivity.start_time >= month_start)
+    )).scalar_one() or 0
+    dist_last = (await db.execute(
+        select(func.coalesce(func.sum(LocationActivity.distance_meters), 0))
+        .where(LocationActivity.start_time >= last_month_start)
+        .where(LocationActivity.start_time <= last_month_end)
+    )).scalar_one() or 0
+
+    if dist_this > 0 or dist_last > 0:
+        diff = round((dist_this - dist_last) / max(dist_last, 1) * 100) if dist_last > 0 else 0
+        insights.append(Insight(
+            title=f"Distance ce mois ({now.strftime('%B').lower()})",
+            description=f"{dist_this/1000:.0f} km parcourus, "
+                        f"vs {dist_last/1000:.0f} km le mois dernier",
+            icon="ruler",
+            color="#ffb84d",
+            metric=f"{dist_this/1000:.0f}",
+            metric_unit="km",
+        ))
+
+    return InsightsResponse(insights=insights, generated_at=now)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
