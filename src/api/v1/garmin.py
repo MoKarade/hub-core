@@ -1,16 +1,47 @@
-"""Endpoint /v1/garmin — Garmin Connect (Phase 4+).
+"""Endpoint /v1/garmin — Garmin Connect (Phase 4+) — Forerunner 955.
 
 Authentification via garminconnect v0.3.x + garth.
 Les tokens sont sérialisés via client.dumps() et stockés chiffrés
 dans OAuthToken (provider="garmin", service="connect").
 
-Métriques synchronisées (source="garmin" dans HealthMetric) :
-  steps, distance_m, calories, active_minutes
-  heart_rate_resting, heart_rate_avg
-  sleep_total_min, sleep_deep_min, sleep_rem_min, sleep_light_min
+Métriques PAR JOUR synchronisées (source="garmin" dans HealthMetric) :
+  — Activité
+  steps, distance_m, calories, calories_total, bmr_calories
+  active_minutes, sedentary_minutes
+  floors, floors_ascended_m, floors_descended_m
+  intensity_moderate_min, intensity_vigorous_min
+
+  — Fréquence cardiaque
+  heart_rate_resting, heart_rate_min, heart_rate_max, rhr_7day_avg
+
+  — Stress & récupération
+  stress_avg, stress_max
+  body_battery_max, body_battery_min, body_battery_end
+  body_battery_charged, body_battery_drained
+
+  — Respiration
+  respiration_waking_avg, respiration_min, respiration_max
+
+  — Sommeil
+  sleep_total_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min
+
+  — Oxymétrie (port la nuit)
+  oxygen_saturation, oxygen_saturation_min, sleep_spo2_avg
+
+  — HRV
+  hrv_avg_ms
+
+  — Préparation à l'entraînement
+  training_readiness, recovery_time_h
+
+  — Composition corporelle (si balance Garmin)
   weight_kg, body_fat_pct
-  stress_avg, body_battery_min, body_battery_max
-  oxygen_saturation, hrv_avg_ms
+
+Métriques GLOBALES (stockées sur la date du jour du sync) :
+  race_time_5k_s, race_time_10k_s, race_time_half_s, race_time_marathon_s
+  cycling_ftp_w
+  fitness_age, fitness_age_best
+  endurance_score
 
 garminconnect est synchrone → tout appel API passe par asyncio.to_thread().
 
@@ -26,6 +57,7 @@ Flux d'authentification :
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -98,120 +130,255 @@ def _login_sync(
     except garminconnect.GarminConnectTooManyRequestsError as e:
         raise ValueError("Trop de tentatives — attends quelques minutes avant de réessayer.") from e
     except Exception as e:
-        # Certaines versions lèvent des exceptions génériques sur erreur MFA
         msg = str(e).lower()
         if mfa_needed or any(x in msg for x in ("mfa", "2fa", "factor", "totp", "otp")):
             if mfa_code is None:
                 return None, True
         raise ValueError(f"Erreur connexion Garmin : {e}") from e
 
-    tokens_json = api.client.dumps()
+    # Sérialise tokens + display_name dans un wrapper JSON.
+    # display_name (UUID Garmin) est requis par get_stats/get_user_summary.
+    # Sans lui, ces endpoints échouent même avec un token valide.
+    garth_tokens = api.client.dumps()
+    tokens_json = json.dumps({"g": garth_tokens, "dn": api.display_name or ""})
     return tokens_json, False
 
 
 def _load_api_sync(tokens_json: str) -> Any:
-    """Recrée une instance Garmin à partir des tokens sérialisés.
+    """Recrée une instance Garmin à partir des tokens sérialisés sans re-login.
 
-    N'appelle PAS login() — charge directement les tokens dans le client.
+    Deux formats supportés :
+    - Nouveau : {"g": <garth_tokens>, "dn": <display_name>}
+    - Ancien (backward compat) : <garth_tokens> directement
+
+    display_name est requis par get_stats/get_user_summary.
+    Si absent du token stocké, il est récupéré via get_userprofile_settings().
     """
     import garminconnect
 
     api = garminconnect.Garmin()
-    api.client.loads(tokens_json)
+
+    try:
+        wrapper = json.loads(tokens_json)
+        if isinstance(wrapper, dict) and "g" in wrapper:
+            # Nouveau format avec display_name intégré
+            api.client.loads(wrapper["g"])
+            api.display_name = wrapper.get("dn") or None
+        else:
+            # Vieux format (plain garth JSON)
+            api.client.loads(tokens_json)
+    except (json.JSONDecodeError, TypeError):
+        api.client.loads(tokens_json)
+
+    # Si display_name manque (anciens tokens), le récupérer via API
+    if not api.display_name:
+        try:
+            settings = api.get_userprofile_settings() or {}
+            api.display_name = settings.get("displayName")
+        except Exception:
+            pass  # Sans display_name, get_stats échouera mais les autres endpoints tiendront
+
     return api
 
 
-def _fetch_day_metrics(api: Any, day: date) -> dict[str, float]:
-    """Récupère toutes les métriques Garmin pour un jour.
+def _safe(fn: Any, label: str) -> Any:
+    """Appelle fn(), logue l'erreur et retourne None si ça échoue."""
+    try:
+        return fn()
+    except Exception as e:
+        logger.debug("garmin_api_error", label=label, err=str(e)[:120])
+        return None
 
-    Chaque source est isolée dans un try/except pour ne pas bloquer les autres
-    si une API renvoie une erreur ou des données vides.
+
+def _fetch_day_metrics(api: Any, day: date) -> dict[str, float]:
+    """Récupère toutes les métriques Garmin disponibles pour un jour.
+
+    Chaque source est isolée dans un try/except pour ne jamais bloquer les autres.
+    Source principale : get_stats() qui contient ~25 champs en un seul appel.
     """
     metrics: dict[str, float] = {}
     ds = day.isoformat()
 
-    # ── Stats journalières (steps, distance, calories, HR, stress) ─────────
-    try:
-        stats = api.get_stats(ds) or {}
-        if (v := stats.get("totalSteps")) and v > 0:
-            metrics["steps"] = float(v)
-        if (v := stats.get("totalDistanceMeters")) and v > 0:
-            metrics["distance_m"] = float(v)
-        # Garmin retourne des kcal ("kilocalories" = ce qu'on appelle "calories" en sport)
-        if (v := stats.get("activeKilocalories")) and v > 0:
-            metrics["calories"] = float(v)
-        # active_minutes = (highlyActive + active) en secondes → minutes
-        ha = stats.get("highlyActiveSeconds") or 0
-        act = stats.get("activeSeconds") or 0
-        if ha + act > 0:
-            metrics["active_minutes"] = round((ha + act) / 60, 1)
-        if (v := stats.get("restingHeartRate")) and v > 0:
-            metrics["heart_rate_resting"] = float(v)
-        if (v := stats.get("averageHeartRate")) and v > 0:
-            metrics["heart_rate_avg"] = float(v)
-        # Stress : -1 = non mesuré
-        if (v := stats.get("averageStressLevel")) is not None and v >= 0:
-            metrics["stress_avg"] = float(v)
-    except Exception as e:
-        logger.debug("garmin_stats_error date=%s err=%s", ds, e)
+    # ── get_stats : source centrale (~25 métriques en 1 appel) ──────────────
+    stats = _safe(lambda: api.get_stats(ds), "get_stats") or {}
+
+    def _s(key: str) -> float | None:
+        v = stats.get(key)
+        return float(v) if v is not None and v != 0 else None
+
+    def _snz(key: str) -> float | None:
+        """get_stats field, skip if null OR zero."""
+        v = stats.get(key)
+        return float(v) if v is not None and isinstance(v, (int, float)) and v > 0 else None
+
+    # Activité
+    if (v := _snz("totalSteps")):
+        metrics["steps"] = v
+    if (v := _snz("totalDistanceMeters")):
+        metrics["distance_m"] = v
+    if (v := _snz("activeKilocalories")):
+        metrics["calories"] = v
+    if (v := _snz("totalKilocalories")):
+        metrics["calories_total"] = v
+    if (v := _snz("bmrKilocalories")):
+        metrics["bmr_calories"] = v
+
+    ha = stats.get("highlyActiveSeconds") or 0
+    act = stats.get("activeSeconds") or 0
+    if ha + act > 0:
+        metrics["active_minutes"] = round((ha + act) / 60, 1)
+
+    if (v := _snz("sedentarySeconds")):
+        metrics["sedentary_minutes"] = round(v / 60, 1)
+
+    # Étages
+    if (v := stats.get("floorsAscended")) is not None and v > 0:
+        metrics["floors"] = round(float(v), 2)
+    if (v := stats.get("floorsAscendedInMeters")) is not None and v > 0:
+        metrics["floors_ascended_m"] = round(float(v), 1)
+    if (v := stats.get("floorsDescendedInMeters")) is not None and v > 0:
+        metrics["floors_descended_m"] = round(float(v), 1)
+
+    # Intensity minutes (hebdo cumulatif, valeur du jour)
+    if (v := stats.get("moderateIntensityMinutes")) is not None and v > 0:
+        metrics["intensity_moderate_min"] = float(v)
+    if (v := stats.get("vigorousIntensityMinutes")) is not None and v > 0:
+        metrics["intensity_vigorous_min"] = float(v)
+
+    # Fréquence cardiaque (depuis stats)
+    if (v := _snz("restingHeartRate")):
+        metrics["heart_rate_resting"] = v
+    if (v := _snz("maxHeartRate")):
+        metrics["heart_rate_max"] = v
+    if (v := _snz("minHeartRate")):
+        metrics["heart_rate_min"] = v
+    if (v := _snz("lastSevenDaysAvgRestingHeartRate")):
+        metrics["rhr_7day_avg"] = v
+
+    # Stress (averageStressLevel ≥ 0 = mesuré, -1 = non mesuré)
+    if (v := stats.get("averageStressLevel")) is not None and v >= 0:
+        metrics["stress_avg"] = float(v)
+    if (v := stats.get("maxStressLevel")) is not None and v > 0:
+        metrics["stress_max"] = float(v)
+
+    # Body Battery (depuis stats — plus complet que get_body_battery)
+    if (v := stats.get("bodyBatteryHighestValue")) is not None and v > 0:
+        metrics["body_battery_max"] = float(v)
+    if (v := stats.get("bodyBatteryLowestValue")) is not None and v > 0:
+        metrics["body_battery_min"] = float(v)
+    if (v := stats.get("bodyBatteryMostRecentValue")) is not None and v > 0:
+        metrics["body_battery_end"] = float(v)
+    if (v := stats.get("bodyBatteryChargedValue")) is not None and v > 0:
+        metrics["body_battery_charged"] = float(v)
+    if (v := stats.get("bodyBatteryDrainedValue")) is not None and v > 0:
+        metrics["body_battery_drained"] = float(v)
+
+    # Respiration (depuis stats)
+    if (v := stats.get("avgWakingRespirationValue")) is not None and v > 0:
+        metrics["respiration_waking_avg"] = round(float(v), 1)
+    if (v := stats.get("highestRespirationValue")) is not None and v > 0:
+        metrics["respiration_max"] = round(float(v), 1)
+    if (v := stats.get("lowestRespirationValue")) is not None and v > 0:
+        metrics["respiration_min"] = round(float(v), 1)
 
     # ── Sommeil ─────────────────────────────────────────────────────────────
-    try:
-        sleep = api.get_sleep_data(ds) or {}
-        dto = sleep.get("dailySleepDTO") or {}
-        if (total_s := dto.get("sleepTimeSeconds") or 0) > 0:
-            metrics["sleep_total_min"] = round(total_s / 60, 1)
-        if (deep_s := dto.get("deepSleepSeconds") or 0) > 0:
-            metrics["sleep_deep_min"] = round(deep_s / 60, 1)
-        if (rem_s := dto.get("remSleepSeconds") or 0) > 0:
-            metrics["sleep_rem_min"] = round(rem_s / 60, 1)
-        if (light_s := dto.get("lightSleepSeconds") or 0) > 0:
-            metrics["sleep_light_min"] = round(light_s / 60, 1)
-    except Exception as e:
-        logger.debug("garmin_sleep_error date=%s err=%s", ds, e)
+    sleep = _safe(lambda: api.get_sleep_data(ds), "get_sleep_data") or {}
+    dto = sleep.get("dailySleepDTO") or {}
 
-    # ── Composition corporelle (poids, body fat) ─────────────────────────
-    try:
-        body = api.get_body_composition(ds, ds) or {}
-        avg = body.get("totalAverage") or {}
-        # Garmin retourne le poids en grammes
-        if (v := avg.get("weight")) and v > 0:
-            metrics["weight_kg"] = round(v / 1000, 2)
-        if (v := avg.get("bodyFatPercentage")) and v > 0:
-            metrics["body_fat_pct"] = float(v)
-    except Exception as e:
-        logger.debug("garmin_body_error date=%s err=%s", ds, e)
+    if (total_s := dto.get("sleepTimeSeconds") or 0) > 0:
+        metrics["sleep_total_min"] = round(total_s / 60, 1)
+    if (v := dto.get("deepSleepSeconds") or 0) > 0:
+        metrics["sleep_deep_min"] = round(v / 60, 1)
+    if (v := dto.get("remSleepSeconds") or 0) > 0:
+        metrics["sleep_rem_min"] = round(v / 60, 1)
+    if (v := dto.get("lightSleepSeconds") or 0) > 0:
+        metrics["sleep_light_min"] = round(v / 60, 1)
+    if (v := dto.get("awakeSleepSeconds") or 0) > 0:
+        metrics["sleep_awake_min"] = round(v / 60, 1)
 
-    # ── Body Battery ─────────────────────────────────────────────────────
-    try:
-        bb = api.get_body_battery(ds, ds) or []
-        if bb and isinstance(bb, list) and bb[0]:
-            entry = bb[0]
-            if (v := entry.get("charged")) is not None:
-                metrics["body_battery_max"] = float(v)
-            if (v := entry.get("drained")) is not None:
-                metrics["body_battery_min"] = float(v)
-    except Exception as e:
-        logger.debug("garmin_body_battery_error date=%s err=%s", ds, e)
+    # Respiration nocturne (dans sleep_data, séparée du waking)
+    for k_resp, k_metric in [
+        ("avgSleepRespirationValue", "sleep_respiration_avg"),
+        ("highestRespirationValue", "sleep_respiration_max"),
+        ("lowestRespirationValue", "sleep_respiration_min"),
+    ]:
+        v = dto.get(k_resp)
+        if v and float(v) > 0:
+            metrics[k_metric] = round(float(v), 1)
 
-    # ── SpO2 ──────────────────────────────────────────────────────────────
-    try:
-        spo2 = api.get_spo2_data(ds) or {}
-        if (v := spo2.get("averageSpO2")) and v > 0:
-            metrics["oxygen_saturation"] = float(v)
-    except Exception as e:
-        logger.debug("garmin_spo2_error date=%s err=%s", ds, e)
+    # ── SpO2 ─────────────────────────────────────────────────────────────────
+    spo2 = _safe(lambda: api.get_spo2_data(ds), "get_spo2_data") or {}
+    if (v := spo2.get("averageSpO2")) and v > 0:
+        metrics["oxygen_saturation"] = float(v)
+    if (v := spo2.get("lowestSpO2")) and v > 0:
+        metrics["oxygen_saturation_min"] = float(v)
+    if (v := spo2.get("avgSleepSpO2")) and v > 0:
+        metrics["sleep_spo2_avg"] = float(v)
 
-    # ── HRV ───────────────────────────────────────────────────────────────
-    try:
-        hrv = api.get_hrv_data(ds) or {}
-        hrv_s = hrv.get("hrvSummary") or {}
-        # lastNight est la valeur HRV moyenne de la nuit (en ms)
-        v = hrv_s.get("lastNight") or hrv_s.get("weeklyAvg")
-        if v and v > 0:
-            metrics["hrv_avg_ms"] = float(v)
-    except Exception as e:
-        logger.debug("garmin_hrv_error date=%s err=%s", ds, e)
+    # ── HRV ──────────────────────────────────────────────────────────────────
+    hrv = _safe(lambda: api.get_hrv_data(ds), "get_hrv_data") or {}
+    hrv_s = hrv.get("hrvSummary") or {}
+    v = hrv_s.get("lastNight") or hrv_s.get("weeklyAvg")
+    if v and v > 0:
+        metrics["hrv_avg_ms"] = float(v)
+
+    # ── Training readiness ───────────────────────────────────────────────────
+    tr_list = _safe(lambda: api.get_training_readiness(ds), "get_training_readiness") or []
+    tr = tr_list[0] if isinstance(tr_list, list) and tr_list else (tr_list or {})
+    if isinstance(tr, dict):
+        if (v := tr.get("score")) is not None and v > 0:
+            metrics["training_readiness"] = float(v)
+        if (v := tr.get("recoveryTime")) is not None and v >= 0:
+            metrics["recovery_time_h"] = float(v)
+
+    # ── Composition corporelle (si balance Garmin connectée) ─────────────────
+    body = _safe(lambda: api.get_body_composition(ds, ds), "get_body_composition") or {}
+    avg = body.get("totalAverage") or {}
+    if (v := avg.get("weight")) and v > 0:
+        metrics["weight_kg"] = round(v / 1000, 2)  # grammes → kg
+    if (v := avg.get("bodyFatPercentage")) and v > 0:
+        metrics["body_fat_pct"] = float(v)
+
+    return metrics
+
+
+def _fetch_global_metrics(api: Any, today: date) -> dict[str, float]:
+    """Métriques ponctuelles stockées sur la date d'aujourd'hui.
+
+    Race predictions, FTP, fitness age, endurance score — valeurs actuelles
+    de Garmin Connect, mises à jour à chaque sync.
+    """
+    metrics: dict[str, float] = {}
+    ds = today.isoformat()
+
+    # Race predictions (temps prédits 5K/10K/half/marathon en secondes)
+    rp = _safe(lambda: api.get_race_predictions(), "get_race_predictions") or {}
+    for k_api, k_metric in [
+        ("time5K", "race_time_5k_s"),
+        ("time10K", "race_time_10k_s"),
+        ("timeHalfMarathon", "race_time_half_s"),
+        ("timeMarathon", "race_time_marathon_s"),
+    ]:
+        if (v := rp.get(k_api)) and v > 0:
+            metrics[k_metric] = float(v)
+
+    # Cycling FTP (Functional Threshold Power en watts)
+    ftp = _safe(lambda: api.get_cycling_ftp(), "get_cycling_ftp") or {}
+    if (v := ftp.get("functionalThresholdPower")) and v > 0:
+        metrics["cycling_ftp_w"] = float(v)
+
+    # Fitness age (âge biologique calculé par Garmin)
+    fa = _safe(lambda: api.get_fitnessage_data(ds), "get_fitnessage_data") or {}
+    if (v := fa.get("fitnessAge")) and v > 0:
+        metrics["fitness_age"] = round(float(v), 1)
+    if (v := fa.get("achievableFitnessAge")) and v > 0:
+        metrics["fitness_age_best"] = round(float(v), 1)
+
+    # Endurance score (score global de condition aérobie)
+    es = _safe(lambda: api.get_endurance_score(ds, ds), "get_endurance_score") or {}
+    es_dto = es.get("enduranceScoreDTO") or {}
+    if (v := es_dto.get("overallScore")) and v > 0:
+        metrics["endurance_score"] = float(v)
 
     return metrics
 
@@ -220,18 +387,28 @@ def _sync_all_days(tokens_json: str, days_back: int) -> dict[str, dict[str, floa
     """Sync complet (synchrone, pour asyncio.to_thread).
 
     Retourne {date_iso: {metric: value}}.
+    Les métriques globales sont stockées sur la date d'aujourd'hui.
     """
     api = _load_api_sync(tokens_json)
     today = datetime.now(UTC).date()
     start = today - timedelta(days=days_back - 1)
 
     result: dict[str, dict[str, float]] = {}
+
+    # Métriques par jour
     day = start
     while day <= today:
         day_metrics = _fetch_day_metrics(api, day)
         if day_metrics:
             result[day.isoformat()] = day_metrics
         day += timedelta(days=1)
+
+    # Métriques globales → ajoutées sur aujourd'hui
+    global_metrics = _fetch_global_metrics(api, today)
+    if global_metrics:
+        existing = result.get(today.isoformat(), {})
+        existing.update(global_metrics)
+        result[today.isoformat()] = existing
 
     return result
 
@@ -412,6 +589,7 @@ async def garmin_sync(
     """Synchronise les métriques santé depuis Garmin Connect.
 
     Upsert dans health_metrics (source='garmin'). Idempotent.
+    Forerunner 955 : ~35 métriques par jour + métriques globales (FTP, race times, fitness age).
     """
     t0 = time.monotonic()
 
