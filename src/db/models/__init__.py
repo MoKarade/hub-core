@@ -14,6 +14,7 @@ from src.db.models.email import Email
 from src.db.models.health_metric import HealthMetric
 from src.db.models.investment_position import InvestmentPosition
 from src.db.models.investment_transaction import InvestmentTransaction
+from src.db.models.location_address import LocationAddress
 from src.db.models.location_point import LocationPoint
 from src.db.models.location_visit import LocationActivity, LocationVisit
 from src.db.models.oauth_token import OAuthToken
@@ -29,6 +30,7 @@ __all__ = [
     "CreditCardTransaction",
     "InvestmentTransaction",
     "InvestmentPosition",
+    "LocationAddress",
     "LocationPoint",
     "LocationVisit",
     "LocationActivity",

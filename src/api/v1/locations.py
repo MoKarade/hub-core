@@ -30,8 +30,8 @@ from sqlalchemy import func, inspect, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.events import broadcast
-from src.db.models import LocationActivity, LocationPoint, LocationVisit
-from src.db.session import get_db
+from src.db.models import LocationActivity, LocationAddress, LocationPoint, LocationVisit
+from src.db.session import SessionLocal, get_db
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/locations", tags=["locations"])
@@ -1673,6 +1673,378 @@ async def get_year_comparison(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch geocoding worker
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Etat du worker batch (module-level pour partage entre requests)
+_GEOCODE_STATE = {
+    "running": False,
+    "total": 0,
+    "processed": 0,
+    "successes": 0,
+    "errors": 0,
+    "skipped": 0,
+    "started_at": None,
+    "last_address": None,
+    "current_label": None,
+    "stop_requested": False,
+}
+
+
+class GeocodeBatchRequest(BaseModel):
+    only_unknown: bool = Field(
+        default=False,
+        description="Si True, ne geocode que les visites avec semantic_type=UNKNOWN. Sinon toutes.",
+    )
+    max_cells: int = Field(default=10000, ge=1, le=100000, description="Limite cellules a geocoder")
+
+
+class GeocodeBatchResponse(BaseModel):
+    started: bool
+    total_to_process: int
+    already_cached: int
+    message: str
+
+
+class GeocodeProgressResponse(BaseModel):
+    running: bool
+    total: int
+    processed: int
+    successes: int
+    errors: int
+    skipped: int
+    pct: float
+    started_at: datetime | None
+    last_address: str | None
+    current_label: str | None
+    eta_seconds: int | None  # estimation
+
+
+async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
+    """Worker async qui parcourt les visites et geocode les cellules manquantes."""
+    import asyncio
+    import time
+    import httpx
+
+    try:
+        async with SessionLocal() as db:
+            # 1. Trouver les cellules uniques NON-cachees
+            q = select(LocationVisit.lat, LocationVisit.lng, LocationVisit.semantic_type)
+            if only_unknown:
+                q = q.where(LocationVisit.semantic_type == "UNKNOWN")
+            visits = list((await db.execute(q)).all())
+
+            cells: dict[tuple[int, int], tuple[float, float]] = {}
+            for v in visits:
+                lat_e4 = round(float(v.lat) * 10000)
+                lng_e4 = round(float(v.lng) * 10000)
+                cells.setdefault((lat_e4, lng_e4), (float(v.lat), float(v.lng)))
+
+            # Filtrer celles deja cachees
+            cached_rows = list((
+                await db.execute(select(LocationAddress.lat_e4, LocationAddress.lng_e4))
+            ).all())
+            cached_keys = {(r.lat_e4, r.lng_e4) for r in cached_rows}
+            todo = [(k, v) for k, v in cells.items() if k not in cached_keys]
+            todo = todo[:max_cells]
+
+            _GEOCODE_STATE["total"] = len(todo)
+            _GEOCODE_STATE["processed"] = 0
+            _GEOCODE_STATE["successes"] = 0
+            _GEOCODE_STATE["errors"] = 0
+            _GEOCODE_STATE["skipped"] = 0
+
+            if not todo:
+                _GEOCODE_STATE["running"] = False
+                logger.info("geocode_batch_nothing_to_do")
+                return
+
+            # 2. Boucle Nominatim avec rate-limit 1.1s
+            async with httpx.AsyncClient(timeout=15) as client:
+                last_t = 0.0
+                for (lat_e4, lng_e4), (lat, lng) in todo:
+                    if _GEOCODE_STATE["stop_requested"]:
+                        logger.info("geocode_batch_stopped")
+                        break
+
+                    elapsed = time.time() - last_t
+                    if elapsed < 1.1:
+                        await asyncio.sleep(1.1 - elapsed)
+                    last_t = time.time()
+
+                    _GEOCODE_STATE["current_label"] = f"{lat:.4f}°, {lng:.4f}°"
+
+                    try:
+                        r = await client.get(
+                            "https://nominatim.openstreetmap.org/reverse",
+                            params={
+                                "lat": lat, "lon": lng, "format": "jsonv2",
+                                "accept-language": "fr,en", "zoom": 18,
+                            },
+                            headers={
+                                "User-Agent": "PersonalDataHub/1.0 "
+                                "(private use, marc.richard4@gmail.com)",
+                            },
+                        )
+                        r.raise_for_status()
+                        data = r.json()
+                        addr = data.get("address", {})
+
+                        # Insere
+                        async with SessionLocal() as inner_db:
+                            row = LocationAddress(
+                                lat_e4=lat_e4, lng_e4=lng_e4, lat=lat, lng=lng,
+                                display_name=data.get("display_name"),
+                                house_number=addr.get("house_number"),
+                                road=addr.get("road"),
+                                suburb=addr.get("suburb") or addr.get("neighbourhood"),
+                                city=(addr.get("city") or addr.get("town")
+                                      or addr.get("village") or addr.get("municipality")),
+                                state=addr.get("state") or addr.get("province"),
+                                postcode=addr.get("postcode"),
+                                country=addr.get("country"),
+                                country_code=addr.get("country_code", "")[:2] or None,
+                                osm_type=data.get("osm_type"),
+                                osm_id=str(data.get("osm_id")) if data.get("osm_id") else None,
+                                status="ok" if data.get("display_name") else "no_result",
+                            )
+                            inner_db.add(row)
+                            await inner_db.commit()
+                        _GEOCODE_STATE["successes"] += 1
+                        _GEOCODE_STATE["last_address"] = (
+                            data.get("display_name", "")[:100] if data.get("display_name") else None
+                        )
+                    except (httpx.HTTPError, ValueError) as exc:
+                        _GEOCODE_STATE["errors"] += 1
+                        logger.warning(
+                            "nominatim_batch_error",
+                            cell=(lat_e4, lng_e4), error=str(exc)[:100],
+                        )
+                        # Insere quand meme un row "failed" pour pas re-tenter
+                        try:
+                            async with SessionLocal() as inner_db:
+                                row = LocationAddress(
+                                    lat_e4=lat_e4, lng_e4=lng_e4, lat=lat, lng=lng,
+                                    status="failed", error=str(exc)[:200],
+                                )
+                                inner_db.add(row)
+                                await inner_db.commit()
+                        except Exception:
+                            pass
+
+                    _GEOCODE_STATE["processed"] += 1
+    finally:
+        _GEOCODE_STATE["running"] = False
+        _GEOCODE_STATE["current_label"] = None
+
+
+@router.post(
+    "/geocode-batch",
+    response_model=GeocodeBatchResponse,
+    summary="Lance le reverse-geocoding en masse de toutes les cellules sans adresse",
+)
+async def geocode_batch(
+    payload: GeocodeBatchRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> GeocodeBatchResponse:
+    import asyncio
+    if _GEOCODE_STATE["running"]:
+        return GeocodeBatchResponse(
+            started=False, total_to_process=0, already_cached=0,
+            message="Un job de geocoding tourne deja",
+        )
+
+    # Calcul rapide des cellules a faire
+    q = select(LocationVisit.lat, LocationVisit.lng)
+    if payload.only_unknown:
+        q = q.where(LocationVisit.semantic_type == "UNKNOWN")
+    visits = list((await db.execute(q)).all())
+    cells = {(round(float(v.lat) * 10000), round(float(v.lng) * 10000)) for v in visits}
+    cached = list((await db.execute(
+        select(LocationAddress.lat_e4, LocationAddress.lng_e4)
+    )).all())
+    cached_keys = {(r.lat_e4, r.lng_e4) for r in cached}
+    to_do = cells - cached_keys
+    n_todo = min(len(to_do), payload.max_cells)
+
+    if n_todo == 0:
+        return GeocodeBatchResponse(
+            started=False, total_to_process=0, already_cached=len(cached_keys),
+            message="Toutes les cellules sont deja geocodees",
+        )
+
+    _GEOCODE_STATE["running"] = True
+    _GEOCODE_STATE["stop_requested"] = False
+    _GEOCODE_STATE["started_at"] = datetime.now(UTC)
+    _GEOCODE_STATE["last_address"] = None
+    _GEOCODE_STATE["current_label"] = None
+
+    asyncio.create_task(_geocode_worker(payload.only_unknown, payload.max_cells))
+
+    eta_min = round(n_todo * 1.1 / 60, 1)
+    return GeocodeBatchResponse(
+        started=True, total_to_process=n_todo, already_cached=len(cached_keys),
+        message=f"Job demarre. {n_todo} cellules a geocoder (~{eta_min} min a 1 req/s)",
+    )
+
+
+@router.get(
+    "/geocode-progress",
+    response_model=GeocodeProgressResponse,
+    summary="Etat du job de geocoding batch en cours",
+)
+async def geocode_progress() -> GeocodeProgressResponse:
+    s = _GEOCODE_STATE
+    pct = (s["processed"] / s["total"] * 100) if s["total"] > 0 else 0.0
+    eta_s = None
+    if s["running"] and s["processed"] > 0 and s["started_at"]:
+        elapsed_s = (datetime.now(UTC) - s["started_at"]).total_seconds()
+        rate = s["processed"] / elapsed_s if elapsed_s else 1
+        remaining = s["total"] - s["processed"]
+        eta_s = int(remaining / rate) if rate > 0 else None
+    return GeocodeProgressResponse(
+        running=s["running"],
+        total=s["total"], processed=s["processed"],
+        successes=s["successes"], errors=s["errors"], skipped=s["skipped"],
+        pct=round(pct, 1),
+        started_at=s["started_at"],
+        last_address=s["last_address"],
+        current_label=s["current_label"],
+        eta_seconds=eta_s,
+    )
+
+
+@router.post(
+    "/geocode-stop",
+    summary="Arrete le job de geocoding en cours",
+)
+async def geocode_stop() -> dict:
+    _GEOCODE_STATE["stop_requested"] = True
+    return {"stopped": True, "was_running": _GEOCODE_STATE["running"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoint d'enrichissement : visite -> adresse (lookup cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class VisitWithAddress(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    start_time: datetime
+    end_time: datetime
+    lat: Decimal
+    lng: Decimal
+    semantic_type: str | None
+    place_id: str | None
+    address: str | None  # short label
+    full_address: str | None
+    city: str | None
+    country: str | None
+
+
+class AddressLite(BaseModel):
+    lat_e4: int
+    lng_e4: int
+    label: str | None
+    city: str | None
+    country: str | None
+    country_code: str | None
+
+
+class AddressesIndexResponse(BaseModel):
+    total: int
+    addresses: list[AddressLite]
+
+
+@router.get(
+    "/addresses",
+    response_model=AddressesIndexResponse,
+    summary="Index leger de toutes les adresses geocodees (lookup frontend)",
+)
+async def list_addresses(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    country: str | None = Query(default=None),
+) -> AddressesIndexResponse:
+    q = select(LocationAddress).where(LocationAddress.status == "ok")
+    if country:
+        q = q.where(LocationAddress.country_code == country.lower())
+    rows = list((await db.execute(q)).scalars().all())
+    return AddressesIndexResponse(
+        total=len(rows),
+        addresses=[
+            AddressLite(
+                lat_e4=r.lat_e4, lng_e4=r.lng_e4,
+                label=r.short_label(), city=r.city,
+                country=r.country, country_code=r.country_code,
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get(
+    "/visits-with-addresses",
+    response_model=list[VisitWithAddress],
+    summary="Liste des visites enrichies avec leur adresse depuis le cache de geocoding",
+)
+async def list_visits_with_addresses(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    semantic_type: str | None = Query(default=None),
+    has_address: bool | None = Query(default=None, description="Filtre : seulement avec/sans adresse"),
+    limit: int = Query(default=200, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
+) -> list[VisitWithAddress]:
+    q = select(LocationVisit).order_by(LocationVisit.start_time.desc())
+    if start_date:
+        q = q.where(LocationVisit.start_time >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC))
+    if end_date:
+        q = q.where(LocationVisit.start_time <= datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=UTC))
+    if semantic_type:
+        q = q.where(LocationVisit.semantic_type == semantic_type)
+    q = q.limit(limit).offset(offset)
+    visits = list((await db.execute(q)).scalars().all())
+
+    # Charge tous les addresses correspondants en 1 query
+    cells = {(round(float(v.lat) * 10000), round(float(v.lng) * 10000)) for v in visits}
+    if cells:
+        addr_rows = list((
+            await db.execute(
+                select(LocationAddress).where(
+                    sa.tuple_(LocationAddress.lat_e4, LocationAddress.lng_e4).in_(list(cells))
+                )
+            )
+        ).scalars().all())
+        addr_map = {(a.lat_e4, a.lng_e4): a for a in addr_rows}
+    else:
+        addr_map = {}
+
+    results: list[VisitWithAddress] = []
+    for v in visits:
+        key = (round(float(v.lat) * 10000), round(float(v.lng) * 10000))
+        addr = addr_map.get(key)
+        short = addr.short_label() if addr else None
+        if has_address is True and not short:
+            continue
+        if has_address is False and short:
+            continue
+        results.append(VisitWithAddress(
+            id=v.id, start_time=v.start_time, end_time=v.end_time,
+            lat=v.lat, lng=v.lng,
+            semantic_type=v.semantic_type, place_id=v.place_id,
+            address=short,
+            full_address=addr.display_name if addr else None,
+            city=addr.city if addr else None,
+            country=addr.country if addr else None,
+        ))
+    return results
+
+
 @router.get(
     "/reverse-geocode",
     response_model=ReverseGeocodeResponse,
@@ -1681,11 +2053,30 @@ async def get_year_comparison(
 async def reverse_geocode(
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
+    db: Annotated[AsyncSession, Depends(get_db)] = ...,
 ) -> ReverseGeocodeResponse:
     import asyncio
     import time
     import httpx
 
+    # 1. Check cache DB (location_addresses)
+    lat_e4 = round(lat * 10000)
+    lng_e4 = round(lng * 10000)
+    db_row = (await db.execute(
+        select(LocationAddress)
+        .where(LocationAddress.lat_e4 == lat_e4)
+        .where(LocationAddress.lng_e4 == lng_e4)
+    )).scalar_one_or_none()
+    if db_row and db_row.status == "ok":
+        return ReverseGeocodeResponse(
+            lat=lat, lng=lng, cached=True,
+            address=db_row.display_name,
+            house_number=db_row.house_number, road=db_row.road,
+            city=db_row.city, state=db_row.state,
+            country=db_row.country, postcode=db_row.postcode,
+        )
+
+    # 2. Check cache memoire
     key = (round(lat, 4), round(lng, 4))  # ~11m precision
     if key in _GEOCODE_CACHE:
         cached = _GEOCODE_CACHE[key]
