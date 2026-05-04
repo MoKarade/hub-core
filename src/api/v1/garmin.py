@@ -212,15 +212,15 @@ def _fetch_day_metrics(api: Any, day: date) -> dict[str, float]:
         return float(v) if v is not None and isinstance(v, (int, float)) and v > 0 else None
 
     # Activité
-    if (v := _snz("totalSteps")):
+    if v := _snz("totalSteps"):
         metrics["steps"] = v
-    if (v := _snz("totalDistanceMeters")):
+    if v := _snz("totalDistanceMeters"):
         metrics["distance_m"] = v
-    if (v := _snz("activeKilocalories")):
+    if v := _snz("activeKilocalories"):
         metrics["calories"] = v
-    if (v := _snz("totalKilocalories")):
+    if v := _snz("totalKilocalories"):
         metrics["calories_total"] = v
-    if (v := _snz("bmrKilocalories")):
+    if v := _snz("bmrKilocalories"):
         metrics["bmr_calories"] = v
 
     ha = stats.get("highlyActiveSeconds") or 0
@@ -228,7 +228,7 @@ def _fetch_day_metrics(api: Any, day: date) -> dict[str, float]:
     if ha + act > 0:
         metrics["active_minutes"] = round((ha + act) / 60, 1)
 
-    if (v := _snz("sedentarySeconds")):
+    if v := _snz("sedentarySeconds"):
         metrics["sedentary_minutes"] = round(v / 60, 1)
 
     # Étages
@@ -246,13 +246,13 @@ def _fetch_day_metrics(api: Any, day: date) -> dict[str, float]:
         metrics["intensity_vigorous_min"] = float(v)
 
     # Fréquence cardiaque (depuis stats)
-    if (v := _snz("restingHeartRate")):
+    if v := _snz("restingHeartRate"):
         metrics["heart_rate_resting"] = v
-    if (v := _snz("maxHeartRate")):
+    if v := _snz("maxHeartRate"):
         metrics["heart_rate_max"] = v
-    if (v := _snz("minHeartRate")):
+    if v := _snz("minHeartRate"):
         metrics["heart_rate_min"] = v
-    if (v := _snz("lastSevenDaysAvgRestingHeartRate")):
+    if v := _snz("lastSevenDaysAvgRestingHeartRate"):
         metrics["rhr_7day_avg"] = v
 
     # Stress (averageStressLevel ≥ 0 = mesuré, -1 = non mesuré)
