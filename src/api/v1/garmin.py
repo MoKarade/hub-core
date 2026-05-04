@@ -26,12 +26,12 @@ Flux d'authentification :
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -42,7 +42,7 @@ from src.db.models.health_metric import HealthMetric
 from src.db.models.oauth_token import OAuthToken
 from src.db.session import get_db
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/garmin", tags=["garmin"])
 
