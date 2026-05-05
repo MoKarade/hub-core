@@ -703,14 +703,33 @@ _ANSWER_SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------
 
 _ALLOWED_TABLES = {
+    # Phase 1 : Finance
     "accounts",
     "transactions",
     "credit_card_transactions",
     "investment_transactions",
     "investment_positions",
+    # Phase 2 : Localisation
     "location_visits",
     "location_activities",
     "location_points",
+    "location_addresses",
+    # Phase 3 : Emails + Calendar
+    "emails",
+    "calendar_events",
+    # Phase 3c : Photos + Drive
+    "photos",
+    "drive_files",
+    # Phase 4 : Sante
+    "health_metrics",
+    # Phase 5 : Tasks + Contacts
+    "tasks",
+    "contacts",
+    # Phase 6 : YouTube
+    "youtube_activities",
+    # Annotations Marc
+    "named_places",
+    "trip_notes",
 }
 
 _FORBIDDEN_KEYWORDS = re.compile(
@@ -721,6 +740,42 @@ _FORBIDDEN_KEYWORDS = re.compile(
     r"pg_read_file|pg_ls_dir|pg_sleep|pg_terminate_backend|dblink)\b",
     re.IGNORECASE,
 )
+
+
+def _extract_sql(text_in: str) -> str:
+    """Extrait le SQL d'une reponse LLM qui peut contenir explication + markdown.
+
+    Strategie defensive : Qwen 14B suit pas toujours l'instruction "juste le SQL,
+    aucune explication". Il prefixe parfois "Pour obtenir X, voici la requete :",
+    wrap dans ``` ou ajoute du blabla apres. On extrait robustement :
+      1. Strip les fences markdown ```sql / ```
+      2. Strip les prefixes 'SQL:' / 'Q:' / 'Query:' / 'Requete:'
+      3. Si le texte contient SELECT ou WITH, on tronque tout ce qui precede
+         le premier match (case-insensitive). Ca elimine les "Pour obtenir..."
+      4. Si le texte contient ';' apres un mot-cle SQL, on coupe a ce ';'
+         pour eviter le blabla post-SQL.
+
+    Retourne le SQL nettoye (peut encore etre invalide, _validate_sql tranchera).
+    """
+    s = text_in.strip()
+    # 1. Markdown fences
+    s = re.sub(r"```(?:sql|postgres|postgresql)?", "", s, flags=re.IGNORECASE)
+    s = s.replace("```", "").strip()
+    # 2. Prefixes en debut de ligne
+    s = re.sub(
+        r"^(?:SQL|Q|Query|Requete|Reponse)\s*:\s*", "", s, flags=re.IGNORECASE
+    ).strip()
+    # 3. Tronque tout ce qui precede le premier SELECT/WITH (case-insensitive,
+    #    ancre sur word-boundary pour eviter de matcher "selecting" dans une phrase).
+    m = re.search(r"\b(WITH|SELECT)\b", s, flags=re.IGNORECASE)
+    if m:
+        s = s[m.start():]
+    # 4. Coupe au premier ';' (fin d'instruction SQL standard) -> elimine le
+    #    blabla post-SQL ("Cette requete selectionne...").
+    semi = s.find(";")
+    if semi != -1:
+        s = s[: semi + 1]
+    return s.strip()
 
 
 def _validate_sql(sql: str) -> str:
@@ -854,12 +909,9 @@ async def ask(
             f"Generation LLM echouee : {type(e).__name__}: {e!r}",
         ) from e
 
-    # Nettoyage : markdown delimiters + prefixes "SQL:" / "Q:" que le LLM ajoute
-    # parfois en mimickant les few-shot examples.
-    generated = re.sub(r"```(?:sql)?", "", generated, flags=re.IGNORECASE).strip()
-    generated = re.sub(
-        r"^(?:SQL|Q|Query|Requete)\s*:\s*", "", generated, flags=re.IGNORECASE
-    ).strip()
+    # Nettoyage robuste : explication FR + markdown + prefixes que le LLM ajoute
+    # parfois meme avec temperature=0 (Qwen 14B sans QLoRA fine-tune).
+    generated = _extract_sql(generated)
 
     try:
         sql = _validate_sql(generated)
@@ -1006,11 +1058,8 @@ async def ask_stream(
             )
             return
 
-        # Cleanup markdown + prefixes
-        generated = re.sub(r"```(?:sql)?", "", generated, flags=re.IGNORECASE).strip()
-        generated = re.sub(
-            r"^(?:SQL|Q|Query|Requete)\s*:\s*", "", generated, flags=re.IGNORECASE
-        ).strip()
+        # Cleanup robuste : explication FR + markdown + prefixes
+        generated = _extract_sql(generated)
 
         # ── Stage 2 : Validation
         yield _emit("stage", {"stage": "sql_validation", "label": "Validation..."})
