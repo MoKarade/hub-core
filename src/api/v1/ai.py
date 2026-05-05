@@ -474,7 +474,7 @@ SQL: SELECT SUM(amount) AS total
             OR description ILIKE '%walmart%' OR description ILIKE '%costco%');
 
 Q: Mes 5 dernieres transactions ?
-SQL: SELECT transaction_date, description, debit, credit, balance_after
+SQL: SELECT id, transaction_date, description, debit, credit, balance_after
      FROM transactions
      ORDER BY transaction_date DESC, created_at DESC LIMIT 5;
 
@@ -503,7 +503,7 @@ Q: Combien d'emails non-lus ?
 SQL: SELECT COUNT(*) AS non_lus FROM emails WHERE is_unread = TRUE;
 
 Q: Mes 10 derniers emails recus ?
-SQL: SELECT sent_at, sender_email, subject, snippet
+SQL: SELECT id, sent_at, sender_email, subject, snippet
      FROM emails
      WHERE 'INBOX' = ANY(labels)
      ORDER BY sent_at DESC LIMIT 10;
@@ -529,7 +529,7 @@ SQL: SELECT COUNT(*) AS nb FROM emails
 -- Calendar : exemples --------------------------------------------------------
 
 Q: Mes evenements aujourd'hui ?
-SQL: SELECT start_at, end_at, summary, location, all_day
+SQL: SELECT id, start_at, end_at, summary, location, all_day
      FROM calendar_events
      WHERE start_at::date = CURRENT_DATE
        AND status IS DISTINCT FROM 'cancelled'
@@ -562,7 +562,7 @@ SQL: SELECT display_name, birthday,
 -- Tasks : exemples -----------------------------------------------------------
 
 Q: Mes taches en retard ?
-SQL: SELECT title, tasklist_title, due_at, notes
+SQL: SELECT id, title, tasklist_title, due_at, notes
      FROM tasks
      WHERE is_completed = FALSE
        AND due_at IS NOT NULL
@@ -588,7 +588,7 @@ SQL: SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE is_video) AS videos
      FROM photos;
 
 Q: Photos prises en juillet 2024 ?
-SQL: SELECT creation_time, filename, camera_model, location_name
+SQL: SELECT id, creation_time, filename, camera_model, location_name
      FROM photos
      WHERE creation_time BETWEEN '2024-07-01' AND '2024-07-31'
      ORDER BY creation_time DESC LIMIT 50;
@@ -682,7 +682,10 @@ _SYSTEM_PROMPT = (
     "seule (SELECT uniquement). Aucune explication, juste le SQL, sans markdown ni "
     "delimiteur. Si la question est ambigue, fais ta meilleure interpretation. "
     "Toujours utiliser ILIKE pour les comparaisons texte (insensible a la casse). "
+    "Pour les listes de lignes (non agregees), inclus toujours `id` en PREMIERE colonne. "
     "INTERDIT : UNION et UNION ALL (les tables ont des schemas differents). "
+    "Routage : 'emails' parle du contenu de la table emails (Gmail), pas des champs "
+    "emails dans contacts. Exemple : 'mes emails' -> FROM emails. "
     "Si la question est trop vague pour cibler UNE seule table (ex: 'tout mon data', "
     "'liste tout'), retourne EXACTEMENT ce SQL : "
     "SELECT 'Question trop vague, precise une categorie : transactions, comptes, "
@@ -883,8 +886,14 @@ async def ask(
                 + "\n\n"
             )
 
+    # Format prompt avec separateur fort entre examples et la VRAIE question
+    # pour empecher Qwen de "continuer" la liste d'exemples au lieu de repondre.
     sql_prompt = (
-        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n{history_block}Q: {payload.question}\nSQL:"
+        f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
+        f"--- FIN DES EXEMPLES ---\n"
+        f"Maintenant reponds UNIQUEMENT a la question suivante avec UN SEUL SQL "
+        f"(pas d'explication, pas d'exemples additionnels) :\n\n"
+        f"{history_block}Question: {payload.question}\nSQL:"
     )
 
     try:
@@ -1030,8 +1039,12 @@ async def ask_stream(
                 )
 
         sql_prompt = (
-            f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n{history_block}"
-            f"Q: {payload.question}\nSQL:"
+            f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
+            f"--- FIN DES EXEMPLES ---\n"
+            f"Maintenant reponds UNIQUEMENT a la question suivante avec UN SEUL SQL "
+            f"(pas d'explication, pas d'exemples additionnels) :\n\n"
+            f"{history_block}"
+            f"Question: {payload.question}\nSQL:"
         )
 
         # ── Stage 1 : SQL generation
