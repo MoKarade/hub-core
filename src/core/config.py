@@ -57,6 +57,21 @@ class Settings(BaseSettings):
     # Frontend URL (pour rediriger après OAuth callback)
     frontend_url: str = "http://localhost:3000"
 
+    # Scheduler auto-sync (Phase 6) : intervals en minutes, 0 = job desactive
+    scheduler_enabled: bool = True
+    scheduler_emails_minutes: int = 15
+    scheduler_calendar_minutes: int = 30
+    scheduler_tasks_minutes: int = 30
+    scheduler_drive_minutes: int = 360       # 6h
+    scheduler_contacts_minutes: int = 720    # 12h
+    scheduler_health_minutes: int = 60       # 1h
+    scheduler_news_minutes: int = 30         # Google News RSS
+
+    # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
+    news_rss_url: str = (
+        "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"
+    )
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ALLOWED_ORIGINS (string CSV) en liste."""

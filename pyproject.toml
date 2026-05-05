@@ -22,6 +22,8 @@ dependencies = [
     "pyjwt[crypto]>=2.10.0",  # Validation JWT Cloudflare Access (Phase 0 fin)
     "exifread>=3.0.0",  # Extraction GPS/EXIF photos (Phase 3c+)
     "garminconnect>=0.2.22",  # Garmin Connect sync (Phase 4+)
+    "apscheduler>=3.10.4",  # Auto-sync periodique des sources (Phase 6)
+    "feedparser>=6.0.11",   # Parsing RSS Google News (Phase 6)
 ]
 
 [project.optional-dependencies]

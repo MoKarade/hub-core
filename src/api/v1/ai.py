@@ -356,6 +356,21 @@ CREATE TABLE trip_notes (            -- Notes sur voyages (cle = start_date)
     content TEXT,
     rating INT                       -- 1-5 etoiles
 );
+
+-- Phase 6 : Actualites Google News RSS ------------------------------------
+
+CREATE TABLE news_articles (         -- Articles RSS Google News (auto-sync 30 min)
+    id UUID PRIMARY KEY,
+    guid TEXT UNIQUE,
+    title TEXT,
+    link TEXT,
+    summary TEXT,
+    source TEXT,                     -- 'Le Devoir','Radio-Canada','TVA Nouvelles', etc.
+    category TEXT,
+    image_url TEXT,
+    published_at TIMESTAMPTZ,
+    feed_url TEXT
+);
 """
 
 _FEW_SHOT_EXAMPLES = """\
@@ -658,6 +673,21 @@ SQL: SELECT channel_title, COUNT(*) AS nb
      GROUP BY channel_title
      ORDER BY nb DESC LIMIT 10;
 
+-- Actualites : exemples -----------------------------------------------------
+
+Q: Les actualites du jour ?
+SQL: SELECT id, published_at, source, title, summary
+     FROM news_articles
+     WHERE published_at >= CURRENT_DATE
+     ORDER BY published_at DESC LIMIT 20;
+
+Q: Articles de Radio-Canada cette semaine ?
+SQL: SELECT id, published_at, title, summary, link
+     FROM news_articles
+     WHERE source ILIKE '%radio-canada%'
+       AND published_at >= CURRENT_DATE - INTERVAL '7 days'
+     ORDER BY published_at DESC LIMIT 30;
+
 -- Contacts : exemples --------------------------------------------------------
 
 Q: Combien de contacts dans mon carnet ?
@@ -733,6 +763,8 @@ _ALLOWED_TABLES = {
     # Annotations Marc
     "named_places",
     "trip_notes",
+    # Phase 6 : News
+    "news_articles",
 }
 
 _FORBIDDEN_KEYWORDS = re.compile(

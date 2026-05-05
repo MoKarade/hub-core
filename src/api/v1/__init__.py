@@ -15,10 +15,12 @@ from src.api.v1 import (
     health_data,
     insights,
     locations,
+    news,
     oauth,
     osint,
     photos,
     places,
+    scheduler_admin,
     security,
     tasks,
     youtube,
@@ -44,3 +46,5 @@ router.include_router(tasks.router)
 router.include_router(youtube.router)
 router.include_router(security.router)
 router.include_router(insights.router)
+router.include_router(news.router)
+router.include_router(scheduler_admin.router)

@@ -9,6 +9,7 @@ from src.api.v1 import router as v1_router
 from src.core.cf_access import CloudflareAccessMiddleware
 from src.core.config import get_settings
 from src.core.logging import logger, setup_logging
+from src.scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
@@ -34,7 +35,10 @@ async def lifespan(app: FastAPI):
             "Liste les origines explicitement dans .env."
         )
     logger.info("hub_startup", env=settings.app_env, app=settings.app_name)
+    # Demarre le scheduler auto-sync (peut etre desactive via SCHEDULER_ENABLED=false)
+    await start_scheduler(settings)
     yield
+    await stop_scheduler()
     logger.info("hub_shutdown")
 
 

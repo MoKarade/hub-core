@@ -18,6 +18,7 @@ from src.db.models.location_address import LocationAddress
 from src.db.models.location_point import LocationPoint
 from src.db.models.location_visit import LocationActivity, LocationVisit
 from src.db.models.named_place import NamedPlace, TripNote
+from src.db.models.news_article import NewsArticle
 from src.db.models.oauth_token import OAuthToken
 from src.db.models.photo import Photo
 from src.db.models.task import Task
@@ -46,4 +47,5 @@ __all__ = [
     "Contact",
     "Task",
     "YouTubeActivity",
+    "NewsArticle",
 ]
