@@ -266,8 +266,11 @@ async def _locations_insights(db: AsyncSession, now: datetime) -> list[Insight]:
                     title="Loin de chez toi",
                     description=f"Derniere visite HOME : il y a {days_away} jours ({last_home.start_time.date().isoformat()})",
                     delta=f"{days_away} j",
-                    action="Voir la journee",
-                    action_url=f"/locations?date={last_home.start_time.date().isoformat()}",
+                    action="Voir la carte",
+                    action_url=(
+                        f"/locations?date={last_home.start_time.date().isoformat()}"
+                        f"&lat={float(last_home.lat):.6f}&lng={float(last_home.lng):.6f}"
+                    ),
                     source="locations",
                     metric_value=float(days_away),
                     generated_at=now,
@@ -296,8 +299,11 @@ async def _locations_insights(db: AsyncSession, now: datetime) -> list[Insight]:
                     title=f"Souvenir : il y a {years_ago} an(s)",
                     description=f"Le {target.isoformat()} tu etais ici ({float(visit.lat):.3f}, {float(visit.lng):.3f})",
                     delta=f"{years_ago} an(s)",
-                    action="Voir la journee",
-                    action_url=f"/locations?date={target.isoformat()}",
+                    action="Voir la carte",
+                    action_url=(
+                        f"/locations?date={target.isoformat()}"
+                        f"&lat={float(visit.lat):.6f}&lng={float(visit.lng):.6f}"
+                    ),
                     source="locations",
                     metric_value=float(years_ago),
                     generated_at=now,
