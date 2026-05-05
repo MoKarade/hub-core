@@ -374,12 +374,29 @@ async def photo_thumbnail(
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
             r.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        # Si baseUrl expire (1h), il faut re-pick via Picker API.
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            f"Thumbnail load failed: {e.response.status_code} (baseUrl peut-etre expire)",
-        ) from e
+    except (httpx.HTTPStatusError, httpx.HTTPError):
+        # Si baseUrl expire (1h Picker API), retourne un placeholder SVG gris
+        # plutot qu'un 502 JSON. Comme ca l'<img> cote frontend affiche une
+        # image propre ("photo expirée") au lieu d'icône cassée du browser.
+        # L'utilisateur peut re-pick via /v1/photos/picker/start pour rafraichir.
+        placeholder = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 200 200">
+  <rect width="200" height="200" fill="#1a1f2a"/>
+  <g fill="#3a4555" transform="translate(100,90)">
+    <rect x="-40" y="-25" width="80" height="55" rx="4" stroke="#4a5565" stroke-width="2" fill="none"/>
+    <circle cx="0" cy="-3" r="14" stroke="#4a5565" stroke-width="2" fill="none"/>
+    <circle cx="22" cy="-15" r="2.5" fill="#4a5565"/>
+  </g>
+  <text x="100" y="150" text-anchor="middle" fill="#5a6575" font-family="monospace" font-size="11">photo expiree</text>
+  <text x="100" y="166" text-anchor="middle" fill="#3a4555" font-family="monospace" font-size="9">re-pick pour rafraichir</text>
+</svg>"""
+        return Response(
+            content=placeholder.encode("utf-8"),
+            media_type="image/svg+xml",
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Placeholder": "expired-baseurl",
+            },
+        )
 
     return Response(
         content=r.content,

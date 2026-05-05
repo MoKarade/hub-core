@@ -191,6 +191,171 @@ CREATE TABLE location_points (       -- Points GPS bruts (timelinePath)
 -- Il a vecu en France (Hauts-de-France ~50.6,2.98) avant.
 -- Pour detecter "voyages a l'etranger", filtrer les visites a >100km du domicile.
 -- Pour "trajets en avion", filter activity_type='FLYING' et distance_meters > 200000.
+
+-- Phase 3 : Emails Gmail --------------------------------------------------
+
+CREATE TABLE emails (
+    id UUID PRIMARY KEY,
+    user_email TEXT,                 -- proprietaire ('marc.richard4@gmail.com')
+    gmail_id TEXT UNIQUE,
+    thread_id TEXT,
+    subject TEXT,
+    sender TEXT,                     -- "Display Name <email@domain>"
+    sender_email TEXT,               -- juste l'email
+    recipients TEXT[],               -- ARRAY destinataires
+    sent_at TIMESTAMPTZ,
+    snippet TEXT,                    -- preview ~200 chars
+    body_text TEXT,                  -- corps en texte brut
+    body_html TEXT,
+    labels TEXT[],                   -- ['INBOX','UNREAD','IMPORTANT', custom...]
+    has_attachments BOOLEAN,
+    is_unread BOOLEAN,
+    size_estimate INT
+);
+-- Pour "non-lus" : WHERE is_unread = TRUE.
+-- Pour filter par expediteur : WHERE sender_email ILIKE '%domain%'.
+-- Pour rechercher dans label : WHERE 'INBOX' = ANY(labels).
+
+-- Phase 3 : Calendar Google ------------------------------------------------
+
+CREATE TABLE calendar_events (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    gcal_id TEXT UNIQUE,
+    calendar_id TEXT,
+    summary TEXT,                    -- titre de l'event
+    description TEXT,
+    location TEXT,
+    start_at TIMESTAMPTZ,
+    end_at TIMESTAMPTZ,
+    all_day BOOLEAN,
+    organizer_email TEXT,
+    attendees TEXT[],                -- ARRAY emails participants
+    status TEXT,                     -- 'confirmed','tentative','cancelled'
+    html_link TEXT,
+    recurring_event_id TEXT          -- NULL si one-off
+);
+
+-- Phase 3c : Photos Google -------------------------------------------------
+
+CREATE TABLE photos (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    media_id TEXT UNIQUE,
+    filename TEXT,
+    mime_type TEXT,                  -- 'image/jpeg', 'video/mp4', etc.
+    description TEXT,
+    creation_time TIMESTAMPTZ,
+    width INT, height INT,
+    is_video BOOLEAN,
+    video_duration_ms INT,
+    camera_make TEXT,                -- 'Apple', 'Google', 'samsung', NULL
+    camera_model TEXT,               -- 'iPhone 14', 'Pixel 8', etc.
+    base_url TEXT,                   -- expire ~60min, ne pas se fier en SQL
+    product_url TEXT,
+    latitude FLOAT, longitude FLOAT, -- NULL si non geolocalise
+    location_name TEXT,
+    faces_count INT
+);
+
+-- Phase 3c : Drive Google --------------------------------------------------
+
+CREATE TABLE drive_files (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    drive_id TEXT UNIQUE,
+    name TEXT,
+    mime_type TEXT,                  -- 'application/pdf', 'application/vnd.google-apps.document', etc.
+    size_bytes BIGINT,               -- NULL pour Google Docs/Sheets
+    starred BOOLEAN, trashed BOOLEAN, is_shared BOOLEAN,
+    owner_email TEXT,
+    created_time TIMESTAMPTZ,
+    modified_time TIMESTAMPTZ,
+    web_view_link TEXT,
+    parents TEXT                     -- IDs parents separes par virgules
+);
+
+-- Phase 4 : Sante / Fitness ------------------------------------------------
+
+CREATE TABLE health_metrics (        -- 1 ligne par jour x metric x source
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    date DATE,
+    metric TEXT,                     -- 'steps','sleep_total_min','sleep_deep_min',
+                                     -- 'sleep_rem_min','sleep_light_min','calories',
+                                     -- 'distance_m','active_minutes','weight_kg',
+                                     -- 'heart_rate_avg'
+    value FLOAT,                     -- valeur (unite implicite par metric)
+    source TEXT                      -- 'google_fit','garmin','apple_health','manual'
+);
+
+-- Phase 5 : Tasks Google ---------------------------------------------------
+
+CREATE TABLE tasks (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    task_id TEXT UNIQUE,
+    tasklist_id TEXT,
+    tasklist_title TEXT,             -- nom de la liste ('Personnel','Boulot', etc.)
+    title TEXT,
+    notes TEXT,
+    is_completed BOOLEAN,
+    due_at TIMESTAMPTZ,              -- echeance, NULL si pas de date
+    completed_at TIMESTAMPTZ,
+    last_modified TIMESTAMPTZ
+);
+-- Pour "en retard" : is_completed = FALSE AND due_at < NOW().
+
+-- Phase 5 : Contacts Google People ------------------------------------------
+
+CREATE TABLE contacts (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    person_id TEXT UNIQUE,
+    display_name TEXT,
+    given_name TEXT, family_name TEXT,
+    emails TEXT[], phones TEXT[], addresses TEXT[],
+    organizations TEXT[],            -- 'NomEntreprise — Titre'
+    birthday DATE,
+    photo_url TEXT,
+    notes TEXT,
+    last_modified TIMESTAMPTZ
+);
+
+-- Phase 6 : YouTube --------------------------------------------------------
+
+CREATE TABLE youtube_activities (
+    id UUID PRIMARY KEY,
+    user_email TEXT,
+    activity_id TEXT UNIQUE,
+    activity_type TEXT,              -- 'upload','like','favorite','subscription'
+    video_id TEXT,
+    video_title TEXT,
+    channel_id TEXT, channel_title TEXT,
+    description TEXT,
+    thumbnail_url TEXT,
+    published_at TIMESTAMPTZ
+);
+
+-- Annotations Marc ---------------------------------------------------------
+
+CREATE TABLE named_places (          -- Lieux nommes (Maison parents, Chalet, Gym, ...)
+    id UUID PRIMARY KEY,
+    name TEXT,
+    lat NUMERIC, lng NUMERIC,
+    radius_m FLOAT,                  -- rayon de match (metres)
+    semantic_type TEXT,
+    notes TEXT
+);
+
+CREATE TABLE trip_notes (            -- Notes sur voyages (cle = start_date)
+    id UUID PRIMARY KEY,
+    start_date DATE UNIQUE,
+    end_date DATE,
+    title TEXT,
+    content TEXT,
+    rating INT                       -- 1-5 etoiles
+);
 """
 
 _FEW_SHOT_EXAMPLES = """\
@@ -267,6 +432,244 @@ SQL: SELECT SUM(distance_meters) / 1000 AS km, COUNT(*) AS sessions,
      FROM location_activities
      WHERE activity_type IN ('WALKING', 'RUNNING')
        AND start_time BETWEEN '2024-01-01' AND '2024-12-31';
+
+Q: Mes 5 derniers voyages a l'etranger ?
+SQL: SELECT DATE(start_time) AS jour, AVG(lat)::numeric(8,4) AS lat,
+            AVG(lng)::numeric(8,4) AS lng, COUNT(*) AS visites
+     FROM location_visits
+     WHERE NOT (lat BETWEEN 45 AND 49 AND lng BETWEEN -75 AND -69)
+       AND semantic_type IS DISTINCT FROM 'HOME'
+     GROUP BY DATE(start_time)
+     ORDER BY jour DESC LIMIT 5;
+
+-- Finance : exemples additionnels --------------------------------------------
+
+Q: Quels sont mes 10 plus gros achats par carte de credit cette annee ?
+SQL: SELECT transaction_date, description, amount
+     FROM credit_card_transactions
+     WHERE amount > 0
+       AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+     ORDER BY amount DESC LIMIT 10;
+
+Q: Mes abonnements recurrents (transactions mensuelles repetees) ?
+SQL: SELECT description, COUNT(*) AS occurrences,
+            ROUND(AVG(amount)::numeric, 2) AS montant_moyen,
+            MIN(transaction_date) AS premiere, MAX(transaction_date) AS derniere
+     FROM credit_card_transactions
+     WHERE amount > 0
+     GROUP BY description
+     HAVING COUNT(*) >= 3
+        AND COUNT(DISTINCT DATE_TRUNC('month', transaction_date)) >= 3
+     ORDER BY occurrences DESC LIMIT 20;
+
+Q: Combien j'ai depense en epicerie le mois dernier ?
+SQL: SELECT SUM(amount) AS total
+     FROM credit_card_transactions
+     WHERE amount > 0
+       AND transaction_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+       AND transaction_date <  DATE_TRUNC('month', CURRENT_DATE)
+       AND (description ILIKE '%iga%' OR description ILIKE '%metro%'
+            OR description ILIKE '%maxi%' OR description ILIKE '%super c%'
+            OR description ILIKE '%provigo%' OR description ILIKE '%loblaws%'
+            OR description ILIKE '%walmart%' OR description ILIKE '%costco%');
+
+Q: Mes 5 dernieres transactions ?
+SQL: SELECT transaction_date, description, debit, credit, balance_after
+     FROM transactions
+     ORDER BY transaction_date DESC, created_at DESC LIMIT 5;
+
+Q: Quelle est la tendance de mon portefeuille sur les 6 derniers releves ?
+SQL: SELECT statement_date, currency, SUM(market_value) AS valeur_totale
+     FROM investment_positions
+     GROUP BY statement_date, currency
+     ORDER BY statement_date DESC LIMIT 12;
+
+Q: Mes positions Nvidia actuelles ?
+SQL: SELECT statement_date, symbol, description, quantity, market_price, market_value, currency
+     FROM investment_positions
+     WHERE symbol ILIKE 'NVDA' OR description ILIKE '%nvidia%'
+     ORDER BY statement_date DESC LIMIT 10;
+
+Q: Combien de dividendes recus en 2025 ?
+SQL: SELECT currency, SUM(amount) AS total_dividendes, COUNT(*) AS nb
+     FROM investment_transactions
+     WHERE operation ILIKE '%dividende%'
+       AND transaction_date BETWEEN '2025-01-01' AND '2025-12-31'
+     GROUP BY currency;
+
+-- Emails : exemples ----------------------------------------------------------
+
+Q: Combien d'emails non-lus ?
+SQL: SELECT COUNT(*) AS non_lus FROM emails WHERE is_unread = TRUE;
+
+Q: Mes 10 derniers emails recus ?
+SQL: SELECT sent_at, sender_email, subject, snippet
+     FROM emails
+     WHERE 'INBOX' = ANY(labels)
+     ORDER BY sent_at DESC LIMIT 10;
+
+Q: Emails de Hydro Quebec cette annee ?
+SQL: SELECT sent_at, subject, snippet
+     FROM emails
+     WHERE sender_email ILIKE '%hydroquebec%'
+       AND sent_at >= DATE_TRUNC('year', CURRENT_DATE)
+     ORDER BY sent_at DESC;
+
+Q: Top 10 expediteurs qui m'envoient le plus d'emails ?
+SQL: SELECT sender_email, COUNT(*) AS nb
+     FROM emails
+     GROUP BY sender_email
+     ORDER BY nb DESC LIMIT 10;
+
+Q: Combien d'emails recus la semaine derniere ?
+SQL: SELECT COUNT(*) AS nb FROM emails
+     WHERE sent_at >= DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1 week')
+       AND sent_at <  DATE_TRUNC('week', CURRENT_DATE);
+
+-- Calendar : exemples --------------------------------------------------------
+
+Q: Mes evenements aujourd'hui ?
+SQL: SELECT start_at, end_at, summary, location, all_day
+     FROM calendar_events
+     WHERE start_at::date = CURRENT_DATE
+       AND status IS DISTINCT FROM 'cancelled'
+     ORDER BY start_at;
+
+Q: Evenements de la semaine prochaine ?
+SQL: SELECT start_at, summary, location
+     FROM calendar_events
+     WHERE start_at >= DATE_TRUNC('week', CURRENT_DATE + INTERVAL '1 week')
+       AND start_at <  DATE_TRUNC('week', CURRENT_DATE + INTERVAL '2 week')
+       AND status IS DISTINCT FROM 'cancelled'
+     ORDER BY start_at;
+
+Q: Combien d'heures de meetings j'ai eu en mars 2025 ?
+SQL: SELECT SUM(EXTRACT(EPOCH FROM (end_at - start_at)) / 3600) AS heures
+     FROM calendar_events
+     WHERE start_at BETWEEN '2025-03-01' AND '2025-03-31'
+       AND all_day = FALSE
+       AND status IS DISTINCT FROM 'cancelled';
+
+Q: Mes prochains anniversaires de contacts ?
+SQL: SELECT display_name, birthday,
+            (DATE_TRUNC('year', CURRENT_DATE) + (birthday - DATE_TRUNC('year', birthday)))::date AS prochain
+     FROM contacts
+     WHERE birthday IS NOT NULL
+     ORDER BY (DATE_TRUNC('year', CURRENT_DATE) + (birthday - DATE_TRUNC('year', birthday)))
+              - CURRENT_DATE
+     LIMIT 10;
+
+-- Tasks : exemples -----------------------------------------------------------
+
+Q: Mes taches en retard ?
+SQL: SELECT title, tasklist_title, due_at, notes
+     FROM tasks
+     WHERE is_completed = FALSE
+       AND due_at IS NOT NULL
+       AND due_at < NOW()
+     ORDER BY due_at;
+
+Q: Combien de taches j'ai terminees ce mois ?
+SQL: SELECT COUNT(*) AS terminees FROM tasks
+     WHERE is_completed = TRUE
+       AND completed_at >= DATE_TRUNC('month', CURRENT_DATE);
+
+Q: Mes taches a faire cette semaine ?
+SQL: SELECT title, tasklist_title, due_at
+     FROM tasks
+     WHERE is_completed = FALSE
+       AND due_at BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+     ORDER BY due_at;
+
+-- Photos : exemples ----------------------------------------------------------
+
+Q: Combien de photos j'ai en tout ?
+SQL: SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE is_video) AS videos
+     FROM photos;
+
+Q: Photos prises en juillet 2024 ?
+SQL: SELECT creation_time, filename, camera_model, location_name
+     FROM photos
+     WHERE creation_time BETWEEN '2024-07-01' AND '2024-07-31'
+     ORDER BY creation_time DESC LIMIT 50;
+
+Q: Mes photos avec GPS prises a l'etranger ?
+SQL: SELECT creation_time, filename, latitude, longitude, location_name
+     FROM photos
+     WHERE latitude IS NOT NULL
+       AND NOT (latitude BETWEEN 45 AND 49 AND longitude BETWEEN -75 AND -69)
+     ORDER BY creation_time DESC LIMIT 50;
+
+Q: Photos prises avec mon iPhone ?
+SQL: SELECT COUNT(*) AS total, MIN(creation_time) AS premiere, MAX(creation_time) AS derniere
+     FROM photos
+     WHERE camera_make ILIKE '%apple%';
+
+-- Drive : exemples -----------------------------------------------------------
+
+Q: Mes 10 fichiers Drive les plus recents ?
+SQL: SELECT name, mime_type, size_bytes, modified_time, web_view_link
+     FROM drive_files
+     WHERE trashed = FALSE
+     ORDER BY modified_time DESC NULLS LAST LIMIT 10;
+
+Q: Combien de PDF j'ai sur Drive ?
+SQL: SELECT COUNT(*) AS nb, COALESCE(SUM(size_bytes), 0) AS taille_totale_bytes
+     FROM drive_files
+     WHERE mime_type = 'application/pdf' AND trashed = FALSE;
+
+-- Sante : exemples -----------------------------------------------------------
+
+Q: Combien de pas hier ?
+SQL: SELECT SUM(value) AS pas
+     FROM health_metrics
+     WHERE metric = 'steps' AND date = CURRENT_DATE - INTERVAL '1 day';
+
+Q: Moyenne de pas par jour ce mois-ci ?
+SQL: SELECT ROUND(AVG(value)::numeric, 0) AS pas_moyens, COUNT(DISTINCT date) AS jours
+     FROM health_metrics
+     WHERE metric = 'steps' AND date >= DATE_TRUNC('month', CURRENT_DATE);
+
+Q: Combien d'heures j'ai dormi en moyenne la semaine derniere ?
+SQL: SELECT ROUND(AVG(value)::numeric / 60, 1) AS heures_par_nuit
+     FROM health_metrics
+     WHERE metric = 'sleep_total_min'
+       AND date >= CURRENT_DATE - INTERVAL '7 days';
+
+Q: Mon poids sur les 30 derniers jours ?
+SQL: SELECT date, value AS kg
+     FROM health_metrics
+     WHERE metric = 'weight_kg'
+       AND date >= CURRENT_DATE - INTERVAL '30 days'
+     ORDER BY date;
+
+-- YouTube : exemples ---------------------------------------------------------
+
+Q: Mes 10 dernieres videos likees ?
+SQL: SELECT published_at, video_title, channel_title
+     FROM youtube_activities
+     WHERE activity_type = 'like'
+     ORDER BY published_at DESC LIMIT 10;
+
+Q: Mes chaines YouTube les plus regardees (par nombre d'activites) ?
+SQL: SELECT channel_title, COUNT(*) AS nb
+     FROM youtube_activities
+     WHERE channel_title IS NOT NULL
+     GROUP BY channel_title
+     ORDER BY nb DESC LIMIT 10;
+
+-- Contacts : exemples --------------------------------------------------------
+
+Q: Combien de contacts dans mon carnet ?
+SQL: SELECT COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE birthday IS NOT NULL) AS avec_anniversaire,
+            COUNT(*) FILTER (WHERE array_length(phones, 1) > 0) AS avec_tel
+     FROM contacts;
+
+Q: Mes contacts qui travaillent chez Google ?
+SQL: SELECT display_name, organizations, emails
+     FROM contacts
+     WHERE EXISTS (SELECT 1 FROM unnest(organizations) AS o WHERE o ILIKE '%google%');
 """
 
 _SYSTEM_PROMPT = (
@@ -521,6 +924,214 @@ async def ask(
         answer = f"(LLM indisponible pour la reformulation : {e}). Resultat brut ci-dessus."
 
     return AskResponse(answer=answer, sql=sql, rows=rows, row_count=len(rows))
+
+
+# ---------------------------------------------------------------------
+# Streaming /ask via SSE — meme logique que /ask mais avec progressive disclosure
+# ---------------------------------------------------------------------
+
+
+@router.post("/ask/stream", summary="Streaming SSE de la generation AI ask")
+async def ask_stream(
+    payload: AskRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Version streaming de /ask : emet des events SSE en cours de generation.
+
+    Events emis :
+    - stage     : indique l'etape courante (sql_generation, sql_validation,
+                  sql_execution, answer_generation, done)
+    - sql       : le SQL valide (apres pass 1 LLM + validation)
+    - rows      : les rows de la DB (apres execution)
+    - token     : chaque token de la reponse finale (pass 2 LLM streaming)
+    - error     : si quelque chose casse
+    - done      : payload final identique a AskResponse
+
+    Frontend consomme via fetch + ReadableStream OU EventSource.
+    """
+    import json as _json
+
+    from fastapi.responses import StreamingResponse
+
+    async def event_stream():
+        def _emit(event: str, data: dict) -> str:
+            return f"event: {event}\ndata: {_json.dumps(data, default=str)}\n\n"
+
+        # Build sql_prompt avec history (reuse logique de /ask)
+        history_block = ""
+        if payload.history:
+            recent = payload.history[-6:]
+            lines = []
+            for msg in recent:
+                role = msg.get("role", "user")
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    lines.append(f"Q precedente: {content}")
+                elif role == "assistant":
+                    lines.append(f"Reponse precedente: {content[:200]}")
+            if lines:
+                history_block = (
+                    "Contexte de la conversation :\n" + "\n".join(lines) + "\n\n"
+                )
+
+        sql_prompt = (
+            f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n{history_block}"
+            f"Q: {payload.question}\nSQL:"
+        )
+
+        # ── Stage 1 : SQL generation
+        yield _emit("stage", {"stage": "sql_generation", "label": "Generation SQL..."})
+
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.post(
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": settings.ollama_model,
+                        "system": _SYSTEM_PROMPT,
+                        "prompt": sql_prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.0},
+                    },
+                )
+                r.raise_for_status()
+                generated = r.json().get("response", "").strip()
+        except Exception as e:
+            yield _emit(
+                "error",
+                {"stage": "sql_generation", "error": f"{type(e).__name__}: {e!r}"},
+            )
+            return
+
+        # Cleanup markdown + prefixes
+        generated = re.sub(r"```(?:sql)?", "", generated, flags=re.IGNORECASE).strip()
+        generated = re.sub(
+            r"^(?:SQL|Q|Query|Requete)\s*:\s*", "", generated, flags=re.IGNORECASE
+        ).strip()
+
+        # ── Stage 2 : Validation
+        yield _emit("stage", {"stage": "sql_validation", "label": "Validation..."})
+        try:
+            sql = _validate_sql(generated)
+        except ValueError as e:
+            yield _emit(
+                "error",
+                {
+                    "stage": "sql_validation",
+                    "error": str(e),
+                    "generated": generated[:200],
+                },
+            )
+            return
+
+        yield _emit("sql", {"sql": sql})
+
+        # ── Stage 3 : Execution
+        yield _emit("stage", {"stage": "sql_execution", "label": "Execution DB..."})
+        try:
+            dialect_name = db.bind.dialect.name if db.bind else ""
+            if dialect_name == "postgresql":
+                await db.execute(text("SET LOCAL statement_timeout = 5000"))
+            result = await db.execute(text(sql))
+            rows = [dict(r._mapping) for r in result]
+        except Exception as e:
+            logger.error(
+                "ai_stream_sql_failed: sql=%r error=%r", sql[:300], e
+            )
+            yield _emit(
+                "error",
+                {"stage": "sql_execution", "error": f"{type(e).__name__}: {e!r}"},
+            )
+            yield _emit(
+                "done",
+                {
+                    "answer": (
+                        "Je n'ai pas pu trouver une reponse precise. "
+                        "Essaie une question plus specifique."
+                    ),
+                    "sql": sql,
+                    "rows": [],
+                    "row_count": 0,
+                },
+            )
+            return
+
+        yield _emit("rows", {"rows": rows[:50], "row_count": len(rows)})
+
+        # ── Stage 4 : Reformulation streaming
+        yield _emit(
+            "stage",
+            {"stage": "answer_generation", "label": "Generation reponse..."},
+        )
+
+        rendered_rows = (
+            "\n".join(str(r) for r in rows[:20]) if rows else "(aucun resultat)"
+        )
+        answer_prompt = (
+            f"Question : {payload.question}\n\n"
+            f"Resultat SQL ({len(rows)} ligne(s)) :\n{rendered_rows}\n\n"
+            "Repond en francais, en 1-3 phrases courtes et factuelles. "
+            "Cite les chiffres exacts."
+        )
+
+        full_answer = ""
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": settings.ollama_model,
+                        "system": _ANSWER_SYSTEM_PROMPT,
+                        "prompt": answer_prompt,
+                        "stream": True,
+                        "options": {"temperature": 0.2},
+                    },
+                ) as r:
+                    r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = _json.loads(line)
+                        except Exception:
+                            continue
+                        token = chunk.get("response", "")
+                        if token:
+                            full_answer += token
+                            yield _emit("token", {"token": token})
+                        if chunk.get("done"):
+                            break
+        except Exception as e:
+            logger.error("ai_stream_answer_failed: %r", e)
+            full_answer = (
+                full_answer
+                or f"(LLM indisponible : {type(e).__name__}: {e!r})"
+            )
+
+        # ── Done : payload final identique a AskResponse
+        yield _emit(
+            "done",
+            {
+                "answer": full_answer.strip(),
+                "sql": sql,
+                "rows": rows,
+                "row_count": len(rows),
+            },
+        )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Pour proxies type Nginx
+        },
+    )
 
 
 # ---------------------------------------------------------------------
