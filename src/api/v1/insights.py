@@ -13,7 +13,7 @@ par hub-ingest qui appellera cet endpoint et filtrera par severite.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
@@ -63,6 +63,20 @@ class InsightsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+
+def _aware(dt: datetime) -> datetime:
+    """Force un datetime en aware UTC.
+
+    SQLite renvoie des datetimes naive ; PostgreSQL des aware. Pour comparer
+    avec datetime.now(UTC), on doit toujours passer par cette helper.
+    """
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
+# ---------------------------------------------------------------------
 # Detectors par source
 # ---------------------------------------------------------------------
 
@@ -80,14 +94,17 @@ async def _calendar_insights(db: AsyncSession, now: datetime) -> list[Insight]:
     )
     rows = (await db.execute(q)).scalars().all()
     for ev in rows:
-        delta_h = (ev.start_at - now).total_seconds() / 3600
-        delta = f"dans {int(delta_h)}h" if delta_h >= 1 else f"dans {int(delta_h*60)} min"
+        start_aw = _aware(ev.start_at)
+        delta_h = (start_aw - now).total_seconds() / 3600
+        delta = f"dans {int(delta_h)}h" if delta_h >= 1 else f"dans {int(delta_h * 60)} min"
         out.append(
             Insight(
                 severity="info" if delta_h > 12 else "warning",
                 icon="Calendar",
                 title=ev.summary or "Evenement sans titre",
-                description=f"{ev.start_at.strftime('%d/%m %H:%M')} ({ev.location or 'lieu non precise'})",
+                description=(
+                    f"{start_aw.strftime('%d/%m %H:%M')} ({ev.location or 'lieu non precise'})"
+                ),
                 delta=delta,
                 action="Voir l'evenement",
                 action_url=f"/calendar?id={ev.id}",
@@ -102,13 +119,16 @@ async def _calendar_insights(db: AsyncSession, now: datetime) -> list[Insight]:
 async def _tasks_insights(db: AsyncSession, now: datetime) -> list[Insight]:
     """Tasks pending + overdue."""
     out: list[Insight] = []
-    today = now.date()
 
     # Overdue (due_at < now ET pas completed)
-    q_overdue = select(func.count()).select_from(Task).where(
-        Task.is_completed.is_(False),
-        Task.due_at.is_not(None),
-        Task.due_at < now,
+    q_overdue = (
+        select(func.count())
+        .select_from(Task)
+        .where(
+            Task.is_completed.is_(False),
+            Task.due_at.is_not(None),
+            Task.due_at < now,
+        )
     )
     overdue = (await db.execute(q_overdue)).scalar_one()
     if overdue > 0:
@@ -128,9 +148,7 @@ async def _tasks_insights(db: AsyncSession, now: datetime) -> list[Insight]:
         )
 
     # Pending non-overdue
-    q_pending = select(func.count()).select_from(Task).where(
-        Task.is_completed.is_(False)
-    )
+    q_pending = select(func.count()).select_from(Task).where(Task.is_completed.is_(False))
     pending = (await db.execute(q_pending)).scalar_one()
     if pending > 0 and pending != overdue:
         out.append(
@@ -172,7 +190,9 @@ async def _finance_insights(db: AsyncSession, now: datetime) -> list[Insight]:
                     severity="info",
                     icon="DollarSign",
                     title=f"Plus grosse depense ce mois : {amount:.0f} $",
-                    description=f"{biggest.transaction_date.isoformat()} - {biggest.description[:80]}",
+                    description=(
+                        f"{biggest.transaction_date.isoformat()} - {biggest.description[:80]}"
+                    ),
                     delta=f"-{amount:.0f} $",
                     action="Voir la transaction",
                     action_url=f"/finances?date={biggest.transaction_date.isoformat()}",
@@ -191,9 +211,7 @@ async def _finance_insights(db: AsyncSession, now: datetime) -> list[Insight]:
             func.count().label("n"),
         )
         .where(CreditCardTransaction.amount > 0)
-        .where(
-            CreditCardTransaction.transaction_date >= today - timedelta(days=120)
-        )
+        .where(CreditCardTransaction.transaction_date >= today - timedelta(days=120))
         .group_by(CreditCardTransaction.description, CreditCardTransaction.amount)
         .having(func.count() >= 3)
         .order_by(func.count().desc())
@@ -207,9 +225,7 @@ async def _finance_insights(db: AsyncSession, now: datetime) -> list[Insight]:
                 severity="info",
                 icon="Repeat",
                 title=f"{len(subs)} abonnement(s) potentiel(s) detecte(s)",
-                description=", ".join(
-                    f"{d[:25]} ({float(a):.0f}$)" for d, a, _ in subs[:3]
-                ),
+                description=", ".join(f"{d[:25]} ({float(a):.0f}$)" for d, a, _ in subs[:3]),
                 delta=f"~{total_sub_monthly:.0f} $/mois",
                 action="Voir les transactions",
                 action_url="/finances",
@@ -257,18 +273,22 @@ async def _locations_insights(db: AsyncSession, now: datetime) -> list[Insight]:
     )
     last_home = (await db.execute(q_home)).scalar_one_or_none()
     if last_home is not None:
-        days_away = (now - last_home.start_time).days
+        last_home_aw = _aware(last_home.start_time)
+        days_away = (now - last_home_aw).days
         if days_away >= 7:
             out.append(
                 Insight(
                     severity="warning" if days_away > 30 else "info",
                     icon="Home",
                     title="Loin de chez toi",
-                    description=f"Derniere visite HOME : il y a {days_away} jours ({last_home.start_time.date().isoformat()})",
+                    description=(
+                        f"Derniere visite HOME : il y a {days_away} jours "
+                        f"({last_home_aw.date().isoformat()})"
+                    ),
                     delta=f"{days_away} j",
                     action="Voir la carte",
                     action_url=(
-                        f"/locations?date={last_home.start_time.date().isoformat()}"
+                        f"/locations?date={last_home_aw.date().isoformat()}"
                         f"&lat={float(last_home.lat):.6f}&lng={float(last_home.lng):.6f}"
                     ),
                     source="locations",
@@ -297,7 +317,10 @@ async def _locations_insights(db: AsyncSession, now: datetime) -> list[Insight]:
                     severity="info",
                     icon="CalendarClock",
                     title=f"Souvenir : il y a {years_ago} an(s)",
-                    description=f"Le {target.isoformat()} tu etais ici ({float(visit.lat):.3f}, {float(visit.lng):.3f})",
+                    description=(
+                        f"Le {target.isoformat()} tu etais ici "
+                        f"({float(visit.lat):.3f}, {float(visit.lng):.3f})"
+                    ),
                     delta=f"{years_ago} an(s)",
                     action="Voir la carte",
                     action_url=(
@@ -351,9 +374,7 @@ async def list_insights(
 
     # Tri : severity (critical d'abord), puis metric_value desc
     severity_order = {"critical": 0, "warning": 1, "info": 2, "positive": 3}
-    all_insights.sort(
-        key=lambda i: (severity_order.get(i.severity, 4), -(i.metric_value or 0))
-    )
+    all_insights.sort(key=lambda i: (severity_order.get(i.severity, 4), -(i.metric_value or 0)))
 
     by_sev: dict[str, int] = {}
     for ins in all_insights:
