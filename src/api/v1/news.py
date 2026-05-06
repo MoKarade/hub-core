@@ -254,9 +254,7 @@ async def news_stats(db: Annotated[AsyncSession, Depends(get_db)]) -> NewsStats:
     ).all()
     by_day = [{"day": str(r[0]), "count": r[1]} for r in by_day_rows]
 
-    last_sync = (
-        await db.execute(select(func.max(NewsArticle.created_at)))
-    ).scalar_one_or_none()
+    last_sync = (await db.execute(select(func.max(NewsArticle.created_at)))).scalar_one_or_none()
 
     return NewsStats(
         total=total,

@@ -35,8 +35,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import Settings, get_settings
-from src.db.session import SessionLocal as async_session_maker
+from src.core.config import Settings
+from src.db.session import SessionLocal as async_session_maker  # noqa: N813
 
 logger = structlog.get_logger()
 
@@ -206,17 +206,17 @@ async def start_scheduler(settings: Settings) -> None:
             next_run_time=datetime.now(UTC).replace(microsecond=0)
             + _delay_secs(30 + (hash(job_id) % 60)),
             max_instances=1,  # Pas de chevauchement si un job traine
-            coalesce=True,    # Si on rate des runs, on en fait UN seul
+            coalesce=True,  # Si on rate des runs, on en fait UN seul
             misfire_grace_time=300,
         )
 
-    _add_job("emails",   _job_emails,   settings.scheduler_emails_minutes)
+    _add_job("emails", _job_emails, settings.scheduler_emails_minutes)
     _add_job("calendar", _job_calendar, settings.scheduler_calendar_minutes)
-    _add_job("tasks",    _job_tasks,    settings.scheduler_tasks_minutes)
-    _add_job("drive",    _job_drive,    settings.scheduler_drive_minutes)
+    _add_job("tasks", _job_tasks, settings.scheduler_tasks_minutes)
+    _add_job("drive", _job_drive, settings.scheduler_drive_minutes)
     _add_job("contacts", _job_contacts, settings.scheduler_contacts_minutes)
-    _add_job("health",   _job_health,   settings.scheduler_health_minutes)
-    _add_job("news",     _job_news,     settings.scheduler_news_minutes)
+    _add_job("health", _job_health, settings.scheduler_health_minutes)
+    _add_job("news", _job_news, settings.scheduler_news_minutes)
 
     _scheduler.start()
     jobs = list_jobs_status()
@@ -249,13 +249,13 @@ def _delay_secs(seconds: int):
 async def run_job_now(job_id: str) -> dict[str, Any]:
     """Lance un job manuellement (utile pour tester / forcer une sync)."""
     factories = {
-        "emails":   _job_emails,
+        "emails": _job_emails,
         "calendar": _job_calendar,
-        "tasks":    _job_tasks,
-        "drive":    _job_drive,
+        "tasks": _job_tasks,
+        "drive": _job_drive,
         "contacts": _job_contacts,
-        "health":   _job_health,
-        "news":     _job_news,
+        "health": _job_health,
+        "news": _job_news,
     }
     if job_id not in factories:
         raise ValueError(f"Unknown job_id: {job_id}. Valid: {list(factories)}")

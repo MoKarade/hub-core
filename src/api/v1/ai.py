@@ -797,14 +797,12 @@ def _extract_sql(text_in: str) -> str:
     s = re.sub(r"```(?:sql|postgres|postgresql)?", "", s, flags=re.IGNORECASE)
     s = s.replace("```", "").strip()
     # 2. Prefixes en debut de ligne
-    s = re.sub(
-        r"^(?:SQL|Q|Query|Requete|Reponse)\s*:\s*", "", s, flags=re.IGNORECASE
-    ).strip()
+    s = re.sub(r"^(?:SQL|Q|Query|Requete|Reponse)\s*:\s*", "", s, flags=re.IGNORECASE).strip()
     # 3. Tronque tout ce qui precede le premier SELECT/WITH (case-insensitive,
     #    ancre sur word-boundary pour eviter de matcher "selecting" dans une phrase).
     m = re.search(r"\b(WITH|SELECT)\b", s, flags=re.IGNORECASE)
     if m:
-        s = s[m.start():]
+        s = s[m.start() :]
     # 4. Coupe au premier ';' (fin d'instruction SQL standard) -> elimine le
     #    blabla post-SQL ("Cette requete selectionne...").
     semi = s.find(";")
@@ -1066,9 +1064,7 @@ async def ask_stream(
                 elif role == "assistant":
                     lines.append(f"Reponse precedente: {content[:200]}")
             if lines:
-                history_block = (
-                    "Contexte de la conversation :\n" + "\n".join(lines) + "\n\n"
-                )
+                history_block = "Contexte de la conversation :\n" + "\n".join(lines) + "\n\n"
 
         sql_prompt = (
             f"{_DB_SCHEMA}\n\n{_FEW_SHOT_EXAMPLES}\n\n"
@@ -1132,9 +1128,7 @@ async def ask_stream(
             result = await db.execute(text(sql))
             rows = [dict(r._mapping) for r in result]
         except Exception as e:
-            logger.error(
-                "ai_stream_sql_failed: sql=%r error=%r", sql[:300], e
-            )
+            logger.error("ai_stream_sql_failed: sql=%r error=%r", sql[:300], e)
             yield _emit(
                 "error",
                 {"stage": "sql_execution", "error": f"{type(e).__name__}: {e!r}"},
@@ -1161,9 +1155,7 @@ async def ask_stream(
             {"stage": "answer_generation", "label": "Generation reponse..."},
         )
 
-        rendered_rows = (
-            "\n".join(str(r) for r in rows[:20]) if rows else "(aucun resultat)"
-        )
+        rendered_rows = "\n".join(str(r) for r in rows[:20]) if rows else "(aucun resultat)"
         answer_prompt = (
             f"Question : {payload.question}\n\n"
             f"Resultat SQL ({len(rows)} ligne(s)) :\n{rendered_rows}\n\n"
@@ -1201,10 +1193,7 @@ async def ask_stream(
                             break
         except Exception as e:
             logger.error("ai_stream_answer_failed: %r", e)
-            full_answer = (
-                full_answer
-                or f"(LLM indisponible : {type(e).__name__}: {e!r})"
-            )
+            full_answer = full_answer or f"(LLM indisponible : {type(e).__name__}: {e!r})"
 
         # ── Done : payload final identique a AskResponse
         yield _emit(
