@@ -68,12 +68,14 @@ class Settings(BaseSettings):
     scheduler_news_minutes: int = 30  # Google News RSS
     scheduler_garmin_minutes: int = 360  # 6h (Garmin Connect via garth)
     scheduler_streaming_minutes: int = 720  # 12h (Trakt history scrape)
+    scheduler_clip_embed_minutes: int = 30  # 30 min (batch 100 photos / run)
+    scheduler_face_detect_minutes: int = 60  # 1h (batch 50 photos / run)
 
     # Trakt.tv OAuth (Phase 6 — streaming hub)
     # A creer sur https://trakt.tv/oauth/applications. Redirect_uri doit matcher exact.
     trakt_client_id: str = ""
     trakt_client_secret: str = ""
-    trakt_redirect_uri: str = "https://hubperso.com/v1/streaming/oauth/callback"
+    trakt_redirect_uri: str = "https://hubperso.com/api/v1/streaming/oauth/callback"
 
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"

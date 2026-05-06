@@ -35,6 +35,17 @@ dev = [
     "ruff>=0.7.0",
     "mypy>=1.13.0",
 ]
+# ML extras (Phase 7+) : CLIP semantic search photos + face recognition.
+# Sur Windows, dlib requiert MSVC Build Tools (visualstudio.microsoft.com).
+# Install : pip install -e ".[ml]" (gros telechargement ~3 GB pour torch).
+ml = [
+    "torch>=2.5.0",
+    "open-clip-torch>=2.32.0",   # CLIP ViT-B-32 (~360 MB modele)
+    "face-recognition>=1.3.0",   # dlib HOG/CNN + 128-d encodings
+    "scikit-learn>=1.5.0",       # DBSCAN clustering
+    "Pillow>=10.0.0",            # PIL Image processing
+    "numpy>=1.26.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]

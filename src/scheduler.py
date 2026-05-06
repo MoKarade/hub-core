@@ -143,6 +143,40 @@ async def _job_news(db: AsyncSession) -> str:
     return f"ingested={res['ingested']} updated={res['updated']}"
 
 
+async def _job_clip_embed(db: AsyncSession) -> str:
+    """Embed N photos sans embedding via CLIP. Skip si torch pas installe.
+
+    Cron par defaut chaque 30 min — traite par batch de 100. Pour 5000 photos
+    a embed, ca prend ~25h auto au demarrage initial puis idle.
+    """
+    try:
+        import open_clip  # noqa: F401
+        import torch  # noqa: F401
+    except ImportError:
+        return "skipped (CLIP not installed: pip install -e .[ml])"
+
+    from src.api.v1.photos_ml import EmbedRequest, embed_photos
+
+    res = await embed_photos(EmbedRequest(limit=100), db=db)
+    return (
+        f"embedded={res.embedded} skipped={res.skipped_no_url} "
+        f"errors={res.errors} remaining={res.total_remaining}"
+    )
+
+
+async def _job_face_detect(db: AsyncSession) -> str:
+    """Detect+encode visages dans N photos non traitees. Skip si dlib pas la."""
+    try:
+        import face_recognition  # noqa: F401
+    except ImportError:
+        return "skipped (face_recognition not installed: pip install -e .[ml])"
+
+    from src.api.v1.photos_ml import FaceDetectRequest, detect_faces
+
+    res = await detect_faces(FaceDetectRequest(limit=50, detection_model="hog"), db=db)
+    return f"photos={res.photos_processed} faces={res.faces_found} errors={res.errors}"
+
+
 async def _job_streaming(db: AsyncSession) -> str:
     """Sync Trakt.tv history des 7 derniers jours.
 
@@ -262,6 +296,8 @@ async def start_scheduler(settings: Settings) -> None:
     _add_job("news", _job_news, settings.scheduler_news_minutes)
     _add_job("garmin", _job_garmin, settings.scheduler_garmin_minutes)
     _add_job("streaming", _job_streaming, settings.scheduler_streaming_minutes)
+    _add_job("clip_embed", _job_clip_embed, settings.scheduler_clip_embed_minutes)
+    _add_job("face_detect", _job_face_detect, settings.scheduler_face_detect_minutes)
 
     _scheduler.start()
     jobs = list_jobs_status()
@@ -303,6 +339,8 @@ async def run_job_now(job_id: str) -> dict[str, Any]:
         "news": _job_news,
         "garmin": _job_garmin,
         "streaming": _job_streaming,
+        "clip_embed": _job_clip_embed,
+        "face_detect": _job_face_detect,
     }
     if job_id not in factories:
         raise ValueError(f"Unknown job_id: {job_id}. Valid: {list(factories)}")
