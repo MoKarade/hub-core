@@ -13,7 +13,7 @@ par hub-ingest qui appellera cet endpoint et filtrera par severite.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
@@ -25,6 +25,7 @@ from src.db.models import (
     CalendarEvent,
     CreditCardTransaction,
     Email,
+    HealthMetric,
     LocationVisit,
     Task,
     Transaction,
@@ -336,6 +337,265 @@ async def _locations_insights(db: AsyncSession, now: datetime) -> list[Insight]:
     return out
 
 
+async def _health_insights(db: AsyncSession, now: datetime) -> list[Insight]:
+    """Insights derives des donnees Garmin/Google Fit (sleep, stress, fitness, HRV)."""
+    out: list[Insight] = []
+    today = now.date()
+    week_ago = today - timedelta(days=7)
+    prev_week = today - timedelta(days=14)
+    month_ago = today - timedelta(days=30)
+
+    # Helper : moyenne d'une metric sur N derniers jours
+    async def _avg(metric: str, since: date) -> float | None:
+        q = (
+            select(func.avg(HealthMetric.value))
+            .where(HealthMetric.metric == metric)
+            .where(HealthMetric.date >= since)
+        )
+        return (await db.execute(q)).scalar_one_or_none()
+
+    # Helper : derniere valeur connue
+    async def _latest(metric: str) -> tuple[date, float] | None:
+        q = (
+            select(HealthMetric.date, HealthMetric.value)
+            .where(HealthMetric.metric == metric)
+            .order_by(HealthMetric.date.desc())
+            .limit(1)
+        )
+        r = (await db.execute(q)).first()
+        return (r.date, float(r.value)) if r else None
+
+    # ── 1. Sommeil insuffisant : moyenne 7j < 6h (360 min) ─────────────────
+    sleep_avg_7d = await _avg("sleep_total_min", week_ago)
+    if sleep_avg_7d is not None and sleep_avg_7d > 0:
+        h = sleep_avg_7d / 60
+        if h < 6:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="MoonOff",
+                    title=f"Sommeil insuffisant : {h:.1f}h en moyenne",
+                    description="Moins de 6h/nuit cette semaine. Pense a recuperer.",
+                    delta=f"{h:.1f}h",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(h),
+                    generated_at=now,
+                )
+            )
+        elif h >= 7.5:
+            out.append(
+                Insight(
+                    severity="positive",
+                    icon="Moon",
+                    title=f"Bon rythme de sommeil : {h:.1f}h",
+                    description="Tu dors bien cette semaine, garde le rythme.",
+                    delta=f"{h:.1f}h",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(h),
+                    generated_at=now,
+                )
+            )
+
+    # ── 2. Stress eleve : avg 7j > 50/100 ──────────────────────────────────
+    stress_avg_7d = await _avg("stress_avg", week_ago)
+    if stress_avg_7d is not None and stress_avg_7d > 0:
+        if stress_avg_7d > 50:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="Zap",
+                    title=f"Stress eleve : {stress_avg_7d:.0f}/100",
+                    description=(
+                        "Niveau de stress moyen de la semaine au-dessus du seuil "
+                        "(50). Prends une pause."
+                    ),
+                    delta=f"{stress_avg_7d:.0f}",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(stress_avg_7d),
+                    generated_at=now,
+                )
+            )
+
+    # ── 3. HRV en baisse : 7j vs 7j precedents ─────────────────────────────
+    hrv_7d = await _avg("hrv_avg_ms", week_ago)
+    hrv_prev = await _avg("hrv_avg_ms", prev_week)
+    if hrv_7d and hrv_prev and hrv_7d > 0 and hrv_prev > 0:
+        delta_pct = round((hrv_7d - hrv_prev) / hrv_prev * 100)
+        if delta_pct <= -15:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="HeartPulse",
+                    title=f"HRV en baisse de {abs(delta_pct)}%",
+                    description=(
+                        f"HRV moyen 7j : {hrv_7d:.0f} ms vs {hrv_prev:.0f} ms semaine "
+                        f"precedente. Signe de fatigue/stress."
+                    ),
+                    delta=f"{delta_pct:+d}%",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(delta_pct),
+                    generated_at=now,
+                )
+            )
+
+    # ── 4. Pas en chute : 7j vs 7j precedents ──────────────────────────────
+    steps_7d = await _avg("steps", week_ago)
+    steps_prev = await _avg("steps", prev_week)
+    if steps_7d and steps_prev and steps_prev > 0:
+        delta_pct = round((steps_7d - steps_prev) / steps_prev * 100)
+        if delta_pct <= -25:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="TrendingDown",
+                    title=f"Pas en chute de {abs(delta_pct)}%",
+                    description=(
+                        f"Moyenne 7j : {steps_7d:.0f} vs {steps_prev:.0f} la semaine "
+                        f"precedente. Bouge un peu plus."
+                    ),
+                    delta=f"{delta_pct:+d}%",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(delta_pct),
+                    generated_at=now,
+                )
+            )
+        elif delta_pct >= 25:
+            out.append(
+                Insight(
+                    severity="positive",
+                    icon="TrendingUp",
+                    title=f"Pas en hausse de +{delta_pct}%",
+                    description=(
+                        f"Moyenne 7j : {steps_7d:.0f} vs {steps_prev:.0f}. Continue comme ca."
+                    ),
+                    delta=f"+{delta_pct}%",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(delta_pct),
+                    generated_at=now,
+                )
+            )
+
+    # ── 5. Recovery time long : derniere mesure > 36h ──────────────────────
+    recovery = await _latest("recovery_time_h")
+    if recovery is not None and recovery[1] >= 36:
+        days_old = (today - recovery[0]).days
+        if days_old <= 2:  # mesure recente seulement
+            out.append(
+                Insight(
+                    severity="info",
+                    icon="BatteryLow",
+                    title=f"Recuperation longue : {recovery[1]:.0f}h",
+                    description=(
+                        f"Recovery time mesure le {recovery[0].isoformat()}. "
+                        "Repose-toi avant ta prochaine grosse seance."
+                    ),
+                    delta=f"{recovery[1]:.0f}h",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(recovery[1]),
+                    generated_at=now,
+                )
+            )
+
+    # ── 6. Fitness age vs best ──────────────────────────────────────────────
+    fa_now = await _latest("fitness_age")
+    fa_best = await _latest("fitness_age_best")
+    if fa_now and fa_best and fa_best[1] > 0:
+        diff = fa_now[1] - fa_best[1]
+        if diff >= 5:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="Activity",
+                    title=f"Fitness age : {fa_now[1]:.0f} (best : {fa_best[1]:.0f})",
+                    description=(
+                        f"Ecart de +{diff:.0f} ans vs ta meilleure performance. "
+                        "L'entrainement de fond paye."
+                    ),
+                    delta=f"+{diff:.0f} ans",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(diff),
+                    generated_at=now,
+                )
+            )
+        elif diff <= 0:
+            out.append(
+                Insight(
+                    severity="positive",
+                    icon="Trophy",
+                    title=f"Fitness age : {fa_now[1]:.0f} (record !)",
+                    description="Tu es au plus haut de ta forme — bravo.",
+                    delta=f"{fa_now[1]:.0f} ans",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(fa_now[1]),
+                    generated_at=now,
+                )
+            )
+
+    # ── 7. Body battery min : energie au plus bas ─────────────────────────
+    bb_min_avg = await _avg("body_battery_min", week_ago)
+    if bb_min_avg is not None and bb_min_avg > 0 and bb_min_avg < 20:
+        out.append(
+            Insight(
+                severity="warning",
+                icon="Battery",
+                title=f"Body Battery min : {bb_min_avg:.0f}/100",
+                description=(
+                    "Tu finis tes journees a tres basse energie. Sommeil + stress a surveiller."
+                ),
+                delta=f"{bb_min_avg:.0f}",
+                action="Voir health",
+                action_url="/health",
+                source="health",
+                metric_value=float(bb_min_avg),
+                generated_at=now,
+            )
+        )
+
+    # ── 8. Frequence cardiaque au repos en hausse (signe stress/fatigue) ──
+    rhr_7d = await _avg("heart_rate_resting", week_ago)
+    rhr_30d = await _avg("heart_rate_resting", month_ago)
+    if rhr_7d and rhr_30d and rhr_30d > 0:
+        diff_bpm = rhr_7d - rhr_30d
+        if diff_bpm >= 5:
+            out.append(
+                Insight(
+                    severity="warning",
+                    icon="Activity",
+                    title=f"FC repos en hausse : +{diff_bpm:.0f} bpm",
+                    description=(
+                        f"Moyenne 7j : {rhr_7d:.0f} bpm vs {rhr_30d:.0f} sur 30j. "
+                        "Souvent signe de fatigue ou maladie qui couve."
+                    ),
+                    delta=f"+{diff_bpm:.0f} bpm",
+                    action="Voir health",
+                    action_url="/health",
+                    source="health",
+                    metric_value=float(diff_bpm),
+                    generated_at=now,
+                )
+            )
+
+    return out
+
+
 # ---------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------
@@ -355,6 +615,7 @@ async def list_insights(
         _tasks_insights,
         _finance_insights,
         _emails_insights,
+        _health_insights,
     ):
         try:
             results = await fn(db, now)

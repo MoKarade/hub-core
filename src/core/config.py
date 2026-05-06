@@ -64,8 +64,9 @@ class Settings(BaseSettings):
     scheduler_tasks_minutes: int = 30
     scheduler_drive_minutes: int = 360  # 6h
     scheduler_contacts_minutes: int = 720  # 12h
-    scheduler_health_minutes: int = 60  # 1h
+    scheduler_health_minutes: int = 60  # 1h (Google Fit)
     scheduler_news_minutes: int = 30  # Google News RSS
+    scheduler_garmin_minutes: int = 360  # 6h (Garmin Connect via garth)
 
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"

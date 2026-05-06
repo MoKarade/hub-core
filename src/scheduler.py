@@ -143,6 +143,27 @@ async def _job_news(db: AsyncSession) -> str:
     return f"ingested={res['ingested']} updated={res['updated']}"
 
 
+async def _job_garmin(db: AsyncSession) -> str:
+    """Sync Garmin Connect des 7 derniers jours (utilise tokens chiffres en DB).
+
+    Skip silencieux si pas de tokens (Marc pas connecte). Pas de crash.
+    """
+    from src.api.v1.garmin import GarminSyncRequest, _load_token_row, garmin_sync
+
+    # Skip silencieux si pas de tokens en DB (Marc n'a jamais fait /connect)
+    row = await _load_token_row(db, "marc.richard4@gmail.com")
+    if row is None or row.revoked_at is not None:
+        return "skipped (no tokens, run /v1/garmin/connect first)"
+
+    res = await garmin_sync(
+        GarminSyncRequest(user_email="marc.richard4@gmail.com", days_back=7),
+        db=db,
+    )
+    return (
+        f"ingested={res.metrics_ingested} updated={res.metrics_updated} days={res.days_processed}"
+    )
+
+
 # ─── Scheduler global instance ────────────────────────────────────────────────
 
 _scheduler: AsyncIOScheduler | None = None
@@ -217,6 +238,7 @@ async def start_scheduler(settings: Settings) -> None:
     _add_job("contacts", _job_contacts, settings.scheduler_contacts_minutes)
     _add_job("health", _job_health, settings.scheduler_health_minutes)
     _add_job("news", _job_news, settings.scheduler_news_minutes)
+    _add_job("garmin", _job_garmin, settings.scheduler_garmin_minutes)
 
     _scheduler.start()
     jobs = list_jobs_status()
@@ -256,6 +278,7 @@ async def run_job_now(job_id: str) -> dict[str, Any]:
         "contacts": _job_contacts,
         "health": _job_health,
         "news": _job_news,
+        "garmin": _job_garmin,
     }
     if job_id not in factories:
         raise ValueError(f"Unknown job_id: {job_id}. Valid: {list(factories)}")
