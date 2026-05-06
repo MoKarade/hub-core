@@ -17,6 +17,7 @@ from src.api.v1 import (
     health_data,
     insights,
     locations,
+    me,
     news,
     notifications,
     oauth,
@@ -56,6 +57,7 @@ router.include_router(tasks.router)
 router.include_router(youtube.router)
 router.include_router(security.router)
 router.include_router(insights.router)
+router.include_router(me.router)
 router.include_router(news.router)
 router.include_router(notifications.router)
 router.include_router(privacy.router)
