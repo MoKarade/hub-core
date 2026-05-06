@@ -203,7 +203,11 @@ def _generate_email(req: RemovalRequest, extra_emails: list[str] | None = None) 
 def _to_out(req: RemovalRequest) -> RemovalRequestOut:
     out = RemovalRequestOut.model_validate(req)
     if req.deadline_at and req.status == "sent":
-        delta = req.deadline_at - datetime.now(UTC)
+        # SQLite stocke en naive (perd la timezone) — on assume UTC.
+        deadline = (
+            req.deadline_at if req.deadline_at.tzinfo else req.deadline_at.replace(tzinfo=UTC)
+        )
+        delta = deadline - datetime.now(UTC)
         out.days_until_deadline = int(delta.total_seconds() // 86400)
     return out
 

@@ -6,6 +6,7 @@ detecte au moment du `revision --autogenerate`.
 
 from src.db.base import Base
 from src.db.models.account import Account
+from src.db.models.browser_history import BrowserHistory
 from src.db.models.calendar_event import CalendarEvent
 from src.db.models.contact import Contact
 from src.db.models.credit_card_transaction import CreditCardTransaction
@@ -34,6 +35,7 @@ from src.db.models.youtube_activity import YouTubeActivity
 __all__ = [
     "Base",
     "Account",
+    "BrowserHistory",
     "Transaction",
     "CreditCardTransaction",
     "InvestmentTransaction",
