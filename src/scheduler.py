@@ -143,6 +143,28 @@ async def _job_news(db: AsyncSession) -> str:
     return f"ingested={res['ingested']} updated={res['updated']}"
 
 
+async def _job_streaming(db: AsyncSession) -> str:
+    """Sync Trakt.tv history des 7 derniers jours.
+
+    Skip silencieux si pas de tokens (Marc pas connecte).
+    """
+    from src.api.v1.streaming import SyncRequest, _load_trakt_token, sync_streaming
+    from src.core.config import get_settings
+
+    try:
+        await _load_trakt_token(db, "marc.richard4@gmail.com")
+    except Exception:
+        return "skipped (no tokens, run /v1/streaming/connect first)"
+
+    settings = get_settings()
+    res = await sync_streaming(
+        SyncRequest(user_email="marc.richard4@gmail.com", days_back=7),
+        db=db,
+        settings=settings,
+    )
+    return f"ingested={res.ingested} updated={res.updated}"
+
+
 async def _job_garmin(db: AsyncSession) -> str:
     """Sync Garmin Connect des 7 derniers jours (utilise tokens chiffres en DB).
 
@@ -239,6 +261,7 @@ async def start_scheduler(settings: Settings) -> None:
     _add_job("health", _job_health, settings.scheduler_health_minutes)
     _add_job("news", _job_news, settings.scheduler_news_minutes)
     _add_job("garmin", _job_garmin, settings.scheduler_garmin_minutes)
+    _add_job("streaming", _job_streaming, settings.scheduler_streaming_minutes)
 
     _scheduler.start()
     jobs = list_jobs_status()
@@ -279,6 +302,7 @@ async def run_job_now(job_id: str) -> dict[str, Any]:
         "health": _job_health,
         "news": _job_news,
         "garmin": _job_garmin,
+        "streaming": _job_streaming,
     }
     if job_id not in factories:
         raise ValueError(f"Unknown job_id: {job_id}. Valid: {list(factories)}")

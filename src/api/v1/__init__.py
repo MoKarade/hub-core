@@ -24,6 +24,7 @@ from src.api.v1 import (
     privacy,
     scheduler_admin,
     security,
+    streaming,
     tasks,
     youtube,
 )
@@ -51,4 +52,5 @@ router.include_router(insights.router)
 router.include_router(news.router)
 router.include_router(notifications.router)
 router.include_router(privacy.router)
+router.include_router(streaming.router)
 router.include_router(scheduler_admin.router)

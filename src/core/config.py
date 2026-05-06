@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     scheduler_health_minutes: int = 60  # 1h (Google Fit)
     scheduler_news_minutes: int = 30  # Google News RSS
     scheduler_garmin_minutes: int = 360  # 6h (Garmin Connect via garth)
+    scheduler_streaming_minutes: int = 720  # 12h (Trakt history scrape)
+
+    # Trakt.tv OAuth (Phase 6 — streaming hub)
+    # A creer sur https://trakt.tv/oauth/applications. Redirect_uri doit matcher exact.
+    trakt_client_id: str = ""
+    trakt_client_secret: str = ""
+    trakt_redirect_uri: str = "https://hubperso.com/v1/streaming/oauth/callback"
 
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"
