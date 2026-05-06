@@ -21,6 +21,7 @@ from src.db.models.named_place import NamedPlace, TripNote
 from src.db.models.news_article import NewsArticle
 from src.db.models.oauth_token import OAuthToken
 from src.db.models.photo import Photo
+from src.db.models.push_subscription import PushSubscription
 from src.db.models.social_post import SocialPost
 from src.db.models.task import Task
 from src.db.models.transaction import Transaction
@@ -49,5 +50,6 @@ __all__ = [
     "Task",
     "YouTubeActivity",
     "NewsArticle",
+    "PushSubscription",
     "SocialPost",
 ]

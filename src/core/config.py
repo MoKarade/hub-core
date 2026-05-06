@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"
 
+    # Web Push (Phase 6) : VAPID keys generees une fois par py_vapid
+    vapid_public_key: str = ""
+    vapid_private_key_pem: str = ""
+    vapid_claim_email: str = "marc.richard4@gmail.com"
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ALLOWED_ORIGINS (string CSV) en liste."""

@@ -16,6 +16,7 @@ from src.api.v1 import (
     insights,
     locations,
     news,
+    notifications,
     oauth,
     osint,
     photos,
@@ -47,4 +48,5 @@ router.include_router(youtube.router)
 router.include_router(security.router)
 router.include_router(insights.router)
 router.include_router(news.router)
+router.include_router(notifications.router)
 router.include_router(scheduler_admin.router)
