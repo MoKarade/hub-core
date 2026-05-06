@@ -21,6 +21,7 @@ from src.api.v1 import (
     osint,
     photos,
     places,
+    privacy,
     scheduler_admin,
     security,
     tasks,
@@ -49,4 +50,5 @@ router.include_router(security.router)
 router.include_router(insights.router)
 router.include_router(news.router)
 router.include_router(notifications.router)
+router.include_router(privacy.router)
 router.include_router(scheduler_admin.router)

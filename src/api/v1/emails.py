@@ -382,6 +382,11 @@ async def sync_emails(
 
     await db.commit()
 
+    if ingested or updated:
+        from src.api.v1.events import broadcast
+
+        await broadcast("emails_synced", {"ingested": ingested, "updated": updated})
+
     return SyncResponse(
         ingested=ingested,
         updated=updated,
