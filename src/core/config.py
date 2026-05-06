@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     trakt_client_secret: str = ""
     trakt_redirect_uri: str = "https://hubperso.com/api/v1/streaming/oauth/callback"
 
+    # Steam Web API (Phase 6 — gaming)
+    # API key gratuite : https://steamcommunity.com/dev/apikey (besoin d'avoir un compte Steam)
+    # SteamID64 : https://steamid.io/ ou via le profil Steam (URL contient /profiles/<id>)
+    steam_api_key: str = ""
+    steam_user_id: str = ""  # SteamID64 (17 chiffres)
+    scheduler_steam_minutes: int = 360  # 6h - snapshots periodiques
+
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"
 

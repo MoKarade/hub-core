@@ -14,8 +14,9 @@ par hub-ingest qui appellera cet endpoint et filtrera par severite.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -597,6 +598,260 @@ async def _health_insights(db: AsyncSession, now: datetime) -> list[Insight]:
 
 
 # ---------------------------------------------------------------------
+# Cross-source LLM insights (Qwen analyse globale)
+# ---------------------------------------------------------------------
+
+
+async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[str, Any]:
+    """Aggregate 7-14j stats per source en JSON compact pour le prompt LLM.
+
+    But : donner au LLM assez de contexte pour generer des observations
+    cross-source pertinentes, sans depasser sa context window.
+    """
+    from datetime import timedelta as _td
+
+    week_ago = now - _td(days=7)
+    two_weeks_ago = now - _td(days=14)
+
+    stats: dict[str, Any] = {"now": now.isoformat()}
+
+    # Health : moyennes 7j vs 7j precedents
+    try:
+        from src.db.models import HealthMetric
+
+        for metric_name in ("steps", "sleep_seconds", "resting_heart_rate", "stress"):
+            q_recent = (
+                select(func.avg(HealthMetric.value))
+                .where(HealthMetric.metric == metric_name)
+                .where(HealthMetric.date >= week_ago.date())
+            )
+            q_prev = (
+                select(func.avg(HealthMetric.value))
+                .where(HealthMetric.metric == metric_name)
+                .where(HealthMetric.date >= two_weeks_ago.date())
+                .where(HealthMetric.date < week_ago.date())
+            )
+            recent = (await db.execute(q_recent)).scalar()
+            prev = (await db.execute(q_prev)).scalar()
+            if recent or prev:
+                stats[f"health_{metric_name}"] = {
+                    "avg_7d": round(float(recent), 1) if recent else None,
+                    "avg_prev_7d": round(float(prev), 1) if prev else None,
+                }
+    except Exception:
+        pass
+
+    # Finance : depenses 7j vs 7j precedents
+    try:
+        from src.db.models import Transaction
+
+        q_recent = select(func.sum(Transaction.debit)).where(
+            Transaction.transaction_date >= week_ago.date()
+        )
+        q_prev = (
+            select(func.sum(Transaction.debit))
+            .where(Transaction.transaction_date >= two_weeks_ago.date())
+            .where(Transaction.transaction_date < week_ago.date())
+        )
+        recent = (await db.execute(q_recent)).scalar()
+        prev = (await db.execute(q_prev)).scalar()
+        if recent or prev:
+            stats["finance_spend"] = {
+                "spend_7d_cad": round(float(recent), 2) if recent else 0,
+                "spend_prev_7d_cad": round(float(prev), 2) if prev else 0,
+            }
+    except Exception:
+        pass
+
+    # Locations : visites + jours hors-maison
+    try:
+        from src.db.models import LocationVisit
+
+        q_visits = (
+            select(func.count())
+            .select_from(LocationVisit)
+            .where(LocationVisit.start_at >= week_ago)
+        )
+        n_visits = (await db.execute(q_visits)).scalar() or 0
+
+        q_last_home = (
+            select(LocationVisit.start_at)
+            .where(LocationVisit.semantic_type == "HOME")
+            .order_by(LocationVisit.start_at.desc())
+            .limit(1)
+        )
+        last_home = (await db.execute(q_last_home)).scalar()
+        days_since_home = None
+        if last_home:
+            days_since_home = (now - _aware(last_home)).days
+
+        stats["locations"] = {
+            "visits_7d": int(n_visits),
+            "days_since_last_home": days_since_home,
+        }
+    except Exception:
+        pass
+
+    # Browser : top domaines + total visites 7j (utile pour cross-ref)
+    try:
+        from src.db.models import BrowserHistory
+
+        q_b = (
+            select(func.count())
+            .select_from(BrowserHistory)
+            .where(BrowserHistory.visited_at >= week_ago)
+        )
+        n_b = (await db.execute(q_b)).scalar() or 0
+
+        q_top = (
+            select(BrowserHistory.domain, func.count().label("c"))
+            .where(BrowserHistory.visited_at >= week_ago)
+            .group_by(BrowserHistory.domain)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+        top = [{"domain": r[0], "count": r[1]} for r in (await db.execute(q_top)).all()]
+        if n_b or top:
+            stats["browser"] = {"visits_7d": int(n_b), "top_domains": top}
+    except Exception:
+        pass
+
+    # Tasks : pending vs done
+    try:
+        from src.db.models import Task
+
+        n_pending = (
+            await db.execute(
+                select(func.count()).select_from(Task).where(Task.status == "needsAction")
+            )
+        ).scalar() or 0
+        n_done_7d = (
+            await db.execute(
+                select(func.count())
+                .select_from(Task)
+                .where(Task.status == "completed")
+                .where(Task.completed_at >= week_ago)
+            )
+        ).scalar() or 0
+        stats["tasks"] = {
+            "pending": int(n_pending),
+            "done_7d": int(n_done_7d),
+        }
+    except Exception:
+        pass
+
+    return stats
+
+
+_LLM_INSIGHT_PROMPT = """Tu es l'IA personnelle de Marc, francophone québécois.
+Voici ses statistiques agrégées sur 7-14 jours, JSON :
+
+```json
+{stats_json}
+```
+
+Génère 1 à 3 insights cross-source (qui croisent au moins 2 sources) en français
+québécois, factuel, sans flatterie. Format STRICT : un JSON pur (pas de markdown,
+pas d'explication), avec un tableau d'objets :
+
+```json
+[
+  {{"severity": "info|warning|positive|critical", "title": "...", "description": "..."}}
+]
+```
+
+Règles :
+- "title" sous 60 caractères, observable et précis (pas généraliste)
+- "description" sous 200 caractères, mentionne les chiffres clés
+- Cherche des CORRELATIONS entre sources (sommeil↔dépenses, browsing↔maison, exercise↔stress)
+- Si rien de notable, retourne `[]` (tableau vide)
+- N'invente AUCUN chiffre absent du JSON ci-dessus
+- Pas de répétition des détecteurs basiques (delta dépenses, jours hors maison)
+- Sois concret : "tu sors plus tard le vendredi" plutôt que "tendance variable"
+"""
+
+
+async def _llm_cross_source_insights(db: AsyncSession, now: datetime) -> list[Insight]:
+    """Genere des insights cross-source via Qwen 2.5 14B local.
+
+    Skip silencieux si Ollama down ou si le LLM retourne rien d'exploitable.
+    Limite a 3 insights par run pour eviter la pollution.
+    """
+    import json as _json
+
+    from src.core.config import get_settings
+
+    settings = get_settings()
+
+    try:
+        stats = await _gather_cross_source_stats(db, now)
+    except Exception:
+        return []
+
+    # Skip si pas assez de data pour etre interessant
+    n_sources = sum(1 for k in stats if k != "now" and stats[k])
+    if n_sources < 2:
+        return []
+
+    prompt = _LLM_INSIGHT_PROMPT.format(stats_json=_json.dumps(stats, ensure_ascii=False))
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={
+                    "model": settings.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.3, "num_predict": 800},
+                },
+            )
+            r.raise_for_status()
+            response_text = r.json().get("response", "").strip()
+    except Exception:
+        return []
+
+    # Parse le JSON retourne (parfois entoure de ```json ... ```)
+    if response_text.startswith("```"):
+        # Retire fences markdown
+        lines = response_text.split("\n")
+        response_text = "\n".join(line for line in lines if not line.startswith("```")).strip()
+
+    try:
+        parsed = _json.loads(response_text)
+        if not isinstance(parsed, list):
+            return []
+    except Exception:
+        return []
+
+    out: list[Insight] = []
+    for item in parsed[:3]:  # cap a 3
+        if not isinstance(item, dict):
+            continue
+        sev = item.get("severity", "info")
+        if sev not in ("critical", "warning", "info", "positive"):
+            sev = "info"
+        title = str(item.get("title", "")).strip()[:80]
+        desc = str(item.get("description", "")).strip()[:240]
+        if not title or not desc:
+            continue
+        out.append(
+            Insight(
+                severity=sev,
+                icon="Sparkles",
+                title=title,
+                description=desc,
+                action="Voir le contexte",
+                action_url="/insights",
+                source="cross-llm",
+                generated_at=now,
+            )
+        )
+
+    return out
+
+
+# ---------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------
 
@@ -616,6 +871,7 @@ async def list_insights(
         _finance_insights,
         _emails_insights,
         _health_insights,
+        _llm_cross_source_insights,
     ):
         try:
             results = await fn(db, now)

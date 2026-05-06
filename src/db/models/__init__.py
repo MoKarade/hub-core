@@ -27,6 +27,7 @@ from src.db.models.photo_face import FaceCluster, PhotoFace
 from src.db.models.push_subscription import PushSubscription
 from src.db.models.removal_request import RemovalRequest
 from src.db.models.social_post import SocialPost
+from src.db.models.steam_play import SteamGame, SteamPlaySnapshot
 from src.db.models.streaming_activity import StreamingActivity
 from src.db.models.task import Task
 from src.db.models.transaction import Transaction
@@ -62,5 +63,7 @@ __all__ = [
     "PushSubscription",
     "RemovalRequest",
     "SocialPost",
+    "SteamGame",
+    "SteamPlaySnapshot",
     "StreamingActivity",
 ]

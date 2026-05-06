@@ -177,6 +177,22 @@ async def _job_face_detect(db: AsyncSession) -> str:
     return f"photos={res.photos_processed} faces={res.faces_found} errors={res.errors}"
 
 
+async def _job_steam(db: AsyncSession) -> str:
+    """Sync Steam library + snapshot playtime. Skip silencieux si pas configure."""
+    from src.api.v1.steam import sync_steam
+    from src.core.config import get_settings
+
+    settings = get_settings()
+    if not settings.steam_api_key or not settings.steam_user_id:
+        return "skipped (STEAM_API_KEY / STEAM_USER_ID not configured)"
+
+    res = await sync_steam(db=db, settings=settings)
+    return (
+        f"games={res.games_in_library} played_2w={res.games_played_2w} "
+        f"snapshots={res.snapshots_created}"
+    )
+
+
 async def _job_streaming(db: AsyncSession) -> str:
     """Sync Trakt.tv history des 7 derniers jours.
 
@@ -296,6 +312,7 @@ async def start_scheduler(settings: Settings) -> None:
     _add_job("news", _job_news, settings.scheduler_news_minutes)
     _add_job("garmin", _job_garmin, settings.scheduler_garmin_minutes)
     _add_job("streaming", _job_streaming, settings.scheduler_streaming_minutes)
+    _add_job("steam", _job_steam, settings.scheduler_steam_minutes)
     _add_job("clip_embed", _job_clip_embed, settings.scheduler_clip_embed_minutes)
     _add_job("face_detect", _job_face_detect, settings.scheduler_face_detect_minutes)
 
@@ -339,6 +356,7 @@ async def run_job_now(job_id: str) -> dict[str, Any]:
         "news": _job_news,
         "garmin": _job_garmin,
         "streaming": _job_streaming,
+        "steam": _job_steam,
         "clip_embed": _job_clip_embed,
         "face_detect": _job_face_detect,
     }
