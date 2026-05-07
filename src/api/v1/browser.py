@@ -137,10 +137,16 @@ async def sync_browser(
     ingested = 0
     skipped = 0
     errors = 0
+    # Dedup intra-batch : Chrome history peut avoir N visites strictement identiques
+    # (meme url + meme visited_at) si l'utilisateur recharge rapidement. Le check
+    # `existing_set` ne couvre que ce qui est deja committe en DB ; sans dedup
+    # intra-batch on declenche une UniqueViolation au commit.
+    seen_in_batch: set[str] = set()
     for item, h in candidates:
-        if h in existing_set:
+        if h in existing_set or h in seen_in_batch:
             skipped += 1
             continue
+        seen_in_batch.add(h)
         try:
             db.add(
                 BrowserHistory(
