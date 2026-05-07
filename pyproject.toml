@@ -24,6 +24,8 @@ dependencies = [
     "garminconnect>=0.2.22",  # Garmin Connect sync (Phase 4+)
     "apscheduler>=3.10.4",  # Auto-sync periodique des sources (Phase 6)
     "feedparser>=6.0.11",   # Parsing RSS Google News (Phase 6)
+    "pywebpush>=2.0.0",     # Web Push notifications PWA (Phase 6)
+    "py-vapid>=1.9.1",      # Genere/signe les VAPID keys (Phase 6)
 ]
 
 [project.optional-dependencies]
