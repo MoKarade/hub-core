@@ -13,6 +13,7 @@ Tables ML pour les photos (Phase 7+) :
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "g3b4c5d6e7f8"

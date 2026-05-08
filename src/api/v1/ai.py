@@ -1026,7 +1026,11 @@ async def ask(
 # ---------------------------------------------------------------------
 
 
-@router.post("/ask/stream", summary="Streaming SSE de la generation AI ask", dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/ask/stream",
+    summary="Streaming SSE de la generation AI ask",
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def ask_stream(
     payload: AskRequest,
     settings: Annotated[Settings, Depends(get_settings)],

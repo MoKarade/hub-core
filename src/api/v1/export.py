@@ -27,6 +27,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
+from src.core.rate_limit import rate_limit
 from src.db.models import (
     Account,
     CalendarEvent,
@@ -51,8 +53,6 @@ from src.db.models import (
     Transaction,
     YouTubeActivity,
 )
-from src.core.config import get_settings
-from src.core.rate_limit import rate_limit
 from src.db.session import get_db
 
 logger = logging.getLogger(__name__)

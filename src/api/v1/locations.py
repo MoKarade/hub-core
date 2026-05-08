@@ -2666,9 +2666,7 @@ async def reverse_geocode(
             r = await client.get(
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": lat, "lon": lng, "format": "jsonv2", "accept-language": "fr,en"},
-                headers={
-                    "User-Agent": f"PersonalDataHub/1.0 (private use, {_OWNER_EMAIL})"
-                },
+                headers={"User-Agent": f"PersonalDataHub/1.0 (private use, {_OWNER_EMAIL})"},
             )
             r.raise_for_status()
             data = r.json()

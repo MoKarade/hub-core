@@ -238,9 +238,7 @@ _ROOT_FOLDER_CACHE: dict[str, tuple[str, datetime]] = {}
 _ROOT_FOLDER_TTL_SECONDS = 3600
 
 
-async def _get_root_folder_id(
-    db: AsyncSession, user_email: str = _OWNER_EMAIL
-) -> str | None:
+async def _get_root_folder_id(db: AsyncSession, user_email: str = _OWNER_EMAIL) -> str | None:
     """Recupere le vrai ID du dossier racine Drive (alias 'root' -> ID reel).
     Drive v3 about n'a PAS rootFolderId, faut faire files.get('root').
     Cache en memoire process avec TTL 1h.

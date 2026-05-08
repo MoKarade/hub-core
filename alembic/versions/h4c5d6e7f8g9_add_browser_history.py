@@ -10,6 +10,7 @@ Table browser_history : visites URL ingerees depuis l'export Chrome/Firefox/etc.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "h4c5d6e7f8g9"

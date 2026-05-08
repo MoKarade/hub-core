@@ -11,6 +11,7 @@ Chaque cellule = ~11m, donc on geocode ~3000 cellules au lieu de 13k visites.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers

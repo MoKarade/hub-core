@@ -11,6 +11,7 @@ Phase 3+ : permettra l'ingest Gmail/Photos/Drive/Calendar/Fit/People/Tasks.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers

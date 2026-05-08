@@ -10,6 +10,7 @@ Tables Steam : steam_games (catalogue) + steam_play_snapshots (snapshots periodi
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "i5d6e7f8g9h0"

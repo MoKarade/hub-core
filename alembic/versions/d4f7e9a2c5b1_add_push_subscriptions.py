@@ -11,6 +11,7 @@ Remplace ntfy.sh par des notifs natives envoyees par l'app du hub elle-meme.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "d4f7e9a2c5b1"

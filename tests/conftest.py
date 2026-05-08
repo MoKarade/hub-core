@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from src.core.rate_limit import _buckets as _rate_buckets
+
 # Import explicite de tous les modèles pour que Base.metadata.create_all les voie
 from src.db.base import Base
 from src.db.models import (  # noqa: F401
@@ -31,7 +33,6 @@ from src.db.models import (  # noqa: F401
     OAuthToken,
     Transaction,
 )
-from src.core.rate_limit import _buckets as _rate_buckets
 from src.db.session import get_db
 from src.main import app
 

@@ -19,9 +19,9 @@ import shutil
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
 
 from src.core.rate_limit import rate_limit
-from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
