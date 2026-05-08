@@ -29,6 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings, get_settings
+from src.core.rate_limit import rate_limit
 from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -770,9 +771,12 @@ _ALLOWED_TABLES = {
 _FORBIDDEN_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|"
     r"COPY|VACUUM|REINDEX|CLUSTER|EXPLAIN|ANALYZE|LOCK|"
-    r"MERGE|CALL|DO|LOAD|"
+    r"MERGE|CALL|DO|LOAD|EXECUTE|PERFORM|"
     r"SET\s+ROLE|SET\s+SESSION|"
-    r"pg_read_file|pg_ls_dir|pg_sleep|pg_terminate_backend|dblink)\b",
+    r"pg_read_file|pg_ls_dir|pg_sleep|pg_terminate_backend|pg_read_binary_file|"
+    r"pg_stat_file|pg_ls_dir|dblink|current_setting|set_config|"
+    r"lo_import|lo_export)\b"
+    r"|(\$\$)",  # PL/pgSQL dollar-quoting
     re.IGNORECASE,
 )
 
@@ -883,7 +887,7 @@ async def ping(settings: Annotated[Settings, Depends(get_settings)]) -> PingResp
         ) from e
 
 
-@router.post("/ask", response_model=AskResponse)
+@router.post("/ask", response_model=AskResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def ask(
     payload: AskRequest,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -1022,7 +1026,7 @@ async def ask(
 # ---------------------------------------------------------------------
 
 
-@router.post("/ask/stream", summary="Streaming SSE de la generation AI ask")
+@router.post("/ask/stream", summary="Streaming SSE de la generation AI ask", dependencies=[Depends(rate_limit(10, 60))])
 async def ask_stream(
     payload: AskRequest,
     settings: Annotated[Settings, Depends(get_settings)],

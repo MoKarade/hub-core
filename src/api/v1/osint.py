@@ -18,7 +18,9 @@ import re
 import shutil
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from src.core.rate_limit import rate_limit
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ router = APIRouter(prefix="/osint", tags=["osint"])
 
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 
 
 class HoleheRequest(BaseModel):
@@ -47,6 +50,13 @@ class HoleheRequest(BaseModel):
 
 class SherlockRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=50)
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, v: str) -> str:
+        if not _USERNAME_RE.match(v):
+            raise ValueError("Username invalide (caractères autorisés : A-Z, a-z, 0-9, . _ -)")
+        return v
 
 
 class OsintHit(BaseModel):
@@ -153,7 +163,7 @@ def _parse_holehe_output(stdout: str) -> list[OsintHit]:
     return hits
 
 
-@router.post("/holehe", response_model=OsintResponse)
+@router.post("/holehe", response_model=OsintResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def scan_email_holehe(payload: HoleheRequest) -> OsintResponse:
     """Scan l'email contre 120+ services via Holehe.
 
@@ -200,7 +210,7 @@ async def scan_email_holehe(payload: HoleheRequest) -> OsintResponse:
 # ---------------------------------------------------------------------
 
 
-@router.post("/sherlock", response_model=OsintResponse)
+@router.post("/sherlock", response_model=OsintResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def scan_username_sherlock(payload: SherlockRequest) -> OsintResponse:
     """Scan le username contre 400+ reseaux sociaux via Sherlock.
 

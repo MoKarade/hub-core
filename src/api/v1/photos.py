@@ -22,9 +22,10 @@ mais aboutit a 403 sur les nouvelles - on log puis recommend Picker.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -34,19 +35,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import Photo
+from src.db.models.location_point import LocationPoint
+from src.db.models.location_visit import LocationVisit
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/photos", tags=["photos"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 PHOTOS_API = "https://photoslibrary.googleapis.com/v1"
 PICKER_API = "https://photospicker.googleapis.com/v1"
 
 
 class PhotosSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     max_results: int = Field(default=2000, ge=1, le=100000)
 
 
@@ -245,7 +250,7 @@ class PhotosStats(BaseModel):
 
 
 class GpsEnrichRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     max_photos: int = Field(default=100, ge=1, le=10000)
     do_geocode: bool = Field(default=True, description="Reverse geocode chaque GPS via Nominatim")
 
@@ -451,6 +456,183 @@ async def photos_stats(db: Annotated[AsyncSession, Depends(get_db)]) -> PhotosSt
 
 
 # ============================================================================
+# Geotag depuis Google Timeline (time-correlation)
+# ============================================================================
+
+
+class GeotagTimelineRequest(BaseModel):
+    user_email: str = Field(default=_OWNER_EMAIL)
+    max_photos: int = Field(default=5000, ge=1, le=100000)
+    window_minutes: int = Field(default=30, ge=1, le=120, description="Tolerance temporelle en minutes")
+    do_geocode: bool = Field(default=False, description="Reverse geocode via Nominatim (lent, 1 req/s)")
+
+
+class GeotagTimelineResponse(BaseModel):
+    processed: int
+    geotagged: int
+    from_points: int
+    from_visits: int
+    geocoded: int
+    errors: int
+    duration_seconds: float
+
+
+@router.post("/geotag-from-timeline", response_model=GeotagTimelineResponse)
+async def geotag_from_timeline(
+    payload: GeotagTimelineRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> GeotagTimelineResponse:
+    """Geolocalise les photos sans GPS en les correlant avec Google Timeline.
+
+    Pour chaque photo sans lat/lng, cherche le LocationPoint dont le timestamp
+    est le plus proche (dans la fenetre payload.window_minutes).
+    Fallback : LocationVisit dont start_time <= creation_time <= end_time.
+
+    Strategie batch : une seule requete pour charger tous les points/visites dans
+    la plage de dates des photos → matching en memoire avec bisect (O(P log L)).
+    """
+    import asyncio as aio
+
+    start = time.monotonic()
+
+    # 1. Photos sans GPS
+    photos_rows = (
+        await db.execute(
+            select(Photo)
+            .where(
+                Photo.user_email == payload.user_email,
+                Photo.latitude.is_(None),
+            )
+            .order_by(Photo.creation_time)
+            .limit(payload.max_photos)
+        )
+    ).scalars().all()
+
+    if not photos_rows:
+        return GeotagTimelineResponse(
+            processed=0, geotagged=0, from_points=0,
+            from_visits=0, geocoded=0, errors=0,
+            duration_seconds=round(time.monotonic() - start, 2),
+        )
+
+    window = timedelta(minutes=payload.window_minutes)
+    min_t = photos_rows[0].creation_time - window
+    max_t = photos_rows[-1].creation_time + window
+
+    # 2. Charge tous les LocationPoints dans la plage (1 requete)
+    lp_rows = (
+        await db.execute(
+            select(LocationPoint)
+            .where(
+                LocationPoint.timestamp_utc >= min_t,
+                LocationPoint.timestamp_utc <= max_t,
+            )
+            .order_by(LocationPoint.timestamp_utc)
+        )
+    ).scalars().all()
+
+    # 3. Charge tous les LocationVisits qui chevauchent la plage (fallback)
+    lv_rows = (
+        await db.execute(
+            select(LocationVisit)
+            .where(
+                LocationVisit.start_time <= max_t,
+                LocationVisit.end_time >= min_t,
+                LocationVisit.lat.isnot(None),
+            )
+            .order_by(LocationVisit.start_time)
+        )
+    ).scalars().all()
+
+    # Index bisect sur les timestamps des LocationPoints
+    lp_timestamps = [lp.timestamp_utc.replace(tzinfo=UTC) if lp.timestamp_utc.tzinfo is None else lp.timestamp_utc for lp in lp_rows]
+
+    processed = 0
+    geotagged = 0
+    from_points = 0
+    from_visits = 0
+    geocoded = 0
+    errors = 0
+
+    reverse_geocode_fn = None
+    if payload.do_geocode:
+        from src.services.photo_gps import reverse_geocode as _rg
+        reverse_geocode_fn = _rg
+
+    for photo in photos_rows:
+        processed += 1
+        try:
+            photo_ts = photo.creation_time.replace(tzinfo=UTC) if photo.creation_time.tzinfo is None else photo.creation_time
+            lat: float | None = None
+            lng: float | None = None
+            source = ""
+
+            # --- Cherche dans LocationPoints ---
+            if lp_timestamps:
+                idx = bisect.bisect_left(lp_timestamps, photo_ts)
+                candidates: list[LocationPoint] = []
+                # Check voisins autour de idx
+                for i in (idx - 1, idx):
+                    if 0 <= i < len(lp_rows):
+                        candidates.append(lp_rows[i])
+                best_lp = None
+                best_delta = timedelta.max
+                for lp in candidates:
+                    lp_ts = lp.timestamp_utc.replace(tzinfo=UTC) if lp.timestamp_utc.tzinfo is None else lp.timestamp_utc
+                    delta = abs(photo_ts - lp_ts)
+                    if delta <= window and delta < best_delta:
+                        best_delta = delta
+                        best_lp = lp
+                if best_lp is not None:
+                    lat = float(best_lp.latitude)
+                    lng = float(best_lp.longitude)
+                    source = "point"
+
+            # --- Fallback LocationVisit ---
+            if lat is None:
+                for lv in lv_rows:
+                    lv_start = lv.start_time.replace(tzinfo=UTC) if lv.start_time.tzinfo is None else lv.start_time
+                    lv_end = lv.end_time.replace(tzinfo=UTC) if lv.end_time.tzinfo is None else lv.end_time
+                    if lv_start <= photo_ts <= lv_end:
+                        lat = float(lv.lat)
+                        lng = float(lv.lng)
+                        source = "visit"
+                        break
+
+            if lat is not None and lng is not None:
+                photo.latitude = lat
+                photo.longitude = lng
+                geotagged += 1
+                if source == "point":
+                    from_points += 1
+                else:
+                    from_visits += 1
+
+                if payload.do_geocode and reverse_geocode_fn and not photo.location_name:
+                    name = await reverse_geocode_fn(lat, lng)
+                    if name:
+                        photo.location_name = name
+                        geocoded += 1
+                    await aio.sleep(1.1)
+
+        except Exception as e:
+            logger.warning("geotag_timeline_failed: photo_id=%s err=%r", photo.media_id, e)
+            errors += 1
+
+    await db.commit()
+
+    return GeotagTimelineResponse(
+        processed=processed,
+        geotagged=geotagged,
+        from_points=from_points,
+        from_visits=from_visits,
+        geocoded=geocoded,
+        errors=errors,
+        duration_seconds=round(time.monotonic() - start, 2),
+    )
+
+
+# ============================================================================
 # Picker API (solution 2025 - Library API restreinte aux apps verifiees)
 # ============================================================================
 
@@ -483,7 +665,7 @@ class PickerImportResponse(BaseModel):
 @router.post("/picker/start", response_model=PickerStartResponse)
 async def picker_start(
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+    user_email: Annotated[str, Query()] = _OWNER_EMAIL,
 ) -> PickerStartResponse:
     """Cree une session Picker. L'user redirige vers picker_uri pour pick."""
     access_token = await _resolve_token(db, user_email)
@@ -512,7 +694,7 @@ async def picker_start(
 async def picker_status(
     session_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+    user_email: Annotated[str, Query()] = _OWNER_EMAIL,
 ) -> PickerStatusResponse:
     """Poll le status d'une session : True quand user a fini de picker."""
     access_token = await _resolve_token(db, user_email)
@@ -574,7 +756,7 @@ def _parse_picker_item(item: dict[str, Any]) -> dict[str, Any]:
 async def picker_import(
     session_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+    user_email: Annotated[str, Query()] = _OWNER_EMAIL,
 ) -> PickerImportResponse:
     """Importe les photos selectionnees dans la session Picker.
 

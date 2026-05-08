@@ -35,8 +35,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import Settings
+from src.core.config import Settings, get_settings
 from src.db.session import SessionLocal as async_session_maker  # noqa: N813
+
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 logger = structlog.get_logger()
 
@@ -78,7 +80,7 @@ async def _job_emails(db: AsyncSession) -> str:
     from src.api.v1.emails import SyncRequest, sync_emails
 
     res = await sync_emails(
-        SyncRequest(user_email="marc.richard4@gmail.com", since_days=1, max_results=200),
+        SyncRequest(user_email=_OWNER_EMAIL, since_days=1, max_results=200),
         db=db,
     )
     return f"ingested={res.ingested} updated={res.updated}"
@@ -88,7 +90,7 @@ async def _job_calendar(db: AsyncSession) -> str:
     from src.api.v1.calendar import CalSyncRequest, sync_calendar
 
     res = await sync_calendar(
-        CalSyncRequest(user_email="marc.richard4@gmail.com", days_back=7, days_forward=180),
+        CalSyncRequest(user_email=_OWNER_EMAIL, days_back=7, days_forward=180),
         db=db,
     )
     return f"ingested={res.events_ingested} updated={res.events_updated}"
@@ -98,7 +100,7 @@ async def _job_tasks(db: AsyncSession) -> str:
     from src.api.v1.tasks import TasksSyncRequest, sync_tasks
 
     res = await sync_tasks(
-        TasksSyncRequest(user_email="marc.richard4@gmail.com"),
+        TasksSyncRequest(user_email=_OWNER_EMAIL),
         db=db,
     )
     return f"ingested={res.tasks_ingested} updated={res.tasks_updated}"
@@ -108,7 +110,7 @@ async def _job_drive(db: AsyncSession) -> str:
     from src.api.v1.drive import DriveSyncRequest, sync_drive
 
     res = await sync_drive(
-        DriveSyncRequest(user_email="marc.richard4@gmail.com", max_results=500),
+        DriveSyncRequest(user_email=_OWNER_EMAIL, max_results=500),
         db=db,
     )
     return f"ingested={res.ingested} updated={res.updated}"
@@ -118,7 +120,7 @@ async def _job_contacts(db: AsyncSession) -> str:
     from src.api.v1.contacts import ContactsSyncRequest, sync_contacts
 
     res = await sync_contacts(
-        ContactsSyncRequest(user_email="marc.richard4@gmail.com"),
+        ContactsSyncRequest(user_email=_OWNER_EMAIL),
         db=db,
     )
     return f"ingested={res.ingested} updated={res.updated}"
@@ -129,7 +131,7 @@ async def _job_health(db: AsyncSession) -> str:
     from src.api.v1.health_data import HealthSyncRequest, sync_health
 
     res = await sync_health(
-        HealthSyncRequest(user_email="marc.richard4@gmail.com", days_back=7),
+        HealthSyncRequest(user_email=_OWNER_EMAIL, days_back=7),
         db=db,
     )
     return f"ingested={res.metrics_ingested} updated={res.metrics_updated}"
@@ -202,13 +204,13 @@ async def _job_streaming(db: AsyncSession) -> str:
     from src.core.config import get_settings
 
     try:
-        await _load_trakt_token(db, "marc.richard4@gmail.com")
+        await _load_trakt_token(db, _OWNER_EMAIL)
     except Exception:
         return "skipped (no tokens, run /v1/streaming/connect first)"
 
     settings = get_settings()
     res = await sync_streaming(
-        SyncRequest(user_email="marc.richard4@gmail.com", days_back=7),
+        SyncRequest(user_email=_OWNER_EMAIL, days_back=7),
         db=db,
         settings=settings,
     )
@@ -223,12 +225,12 @@ async def _job_garmin(db: AsyncSession) -> str:
     from src.api.v1.garmin import GarminSyncRequest, _load_token_row, garmin_sync
 
     # Skip silencieux si pas de tokens en DB (Marc n'a jamais fait /connect)
-    row = await _load_token_row(db, "marc.richard4@gmail.com")
+    row = await _load_token_row(db, _OWNER_EMAIL)
     if row is None or row.revoked_at is not None:
         return "skipped (no tokens, run /v1/garmin/connect first)"
 
     res = await garmin_sync(
-        GarminSyncRequest(user_email="marc.richard4@gmail.com", days_back=7),
+        GarminSyncRequest(user_email=_OWNER_EMAIL, days_back=7),
         db=db,
     )
     return (

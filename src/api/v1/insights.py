@@ -13,8 +13,11 @@ par hub-ingest qui appellera cet endpoint et filtrera par severite.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -638,8 +641,8 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
                     "avg_7d": round(float(recent), 1) if recent else None,
                     "avg_prev_7d": round(float(prev), 1) if prev else None,
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("insights_stats_health_failed err=%r", e)
 
     # Finance : depenses 7j vs 7j precedents
     try:
@@ -660,8 +663,8 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
                 "spend_7d_cad": round(float(recent), 2) if recent else 0,
                 "spend_prev_7d_cad": round(float(prev), 2) if prev else 0,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("insights_stats_finance_failed err=%r", e)
 
     # Locations : visites + jours hors-maison
     try:
@@ -689,8 +692,8 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
             "visits_7d": int(n_visits),
             "days_since_last_home": days_since_home,
         }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("insights_stats_locations_failed err=%r", e)
 
     # Browser : top domaines + total visites 7j (utile pour cross-ref)
     try:
@@ -713,8 +716,8 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
         top = [{"domain": r[0], "count": r[1]} for r in (await db.execute(q_top)).all()]
         if n_b or top:
             stats["browser"] = {"visits_7d": int(n_b), "top_domains": top}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("insights_stats_browser_failed err=%r", e)
 
     # Tasks : pending vs done
     try:
@@ -737,8 +740,8 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
             "pending": int(n_pending),
             "done_7d": int(n_done_7d),
         }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("insights_stats_tasks_failed err=%r", e)
 
     return stats
 

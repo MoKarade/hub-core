@@ -38,6 +38,7 @@ from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/streaming", tags=["streaming"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 TRAKT_BASE = "https://api.trakt.tv"
 TRAKT_AUTH_URL = "https://api.trakt.tv/oauth/authorize"
@@ -50,7 +51,7 @@ TRAKT_TOKEN_URL = "https://api.trakt.tv/oauth/token"
 
 
 class SyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     days_back: int = Field(default=30, ge=1, le=3650)
     max_results: int = Field(default=1000, ge=1, le=10000)
 
@@ -193,7 +194,7 @@ async def trakt_callback(
     code: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
-    user_email: str = "marc.richard4@gmail.com",
+    user_email: str = _OWNER_EMAIL,
 ) -> dict[str, str]:
     """Callback OAuth Trakt : echange le code contre un access_token + stocke en DB."""
     if not settings.trakt_client_id or not settings.trakt_client_secret:
@@ -505,7 +506,7 @@ async def streaming_stats(
 @router.get("/status")
 async def streaming_status(
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: str = "marc.richard4@gmail.com",
+    user_email: str = _OWNER_EMAIL,
 ) -> dict[str, Any]:
     """Etat du connecteur : token present, expire, etc."""
     stmt = select(OAuthToken).where(

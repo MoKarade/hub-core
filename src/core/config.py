@@ -87,10 +87,14 @@ class Settings(BaseSettings):
     # News : URL RSS Google News (FR Quebec par defaut, modifiable via .env)
     news_rss_url: str = "https://news.google.com/rss?hl=fr-CA&gl=CA&ceid=CA%3Afr"
 
+    # Email du propriétaire du hub — doit être défini dans .env (HUB_OWNER_EMAIL=...).
+    # La validation en prod lève RuntimeError si vide ou invalide.
+    hub_owner_email: str = ""
+
     # Web Push (Phase 6) : VAPID keys generees une fois par py_vapid
     vapid_public_key: str = ""
     vapid_private_key_pem: str = ""
-    vapid_claim_email: str = "marc.richard4@gmail.com"
+    vapid_claim_email: str = ""  # hérité de hub_owner_email si vide (voir notifications.py)
 
     @property
     def cors_origins_list(self) -> list[str]:
@@ -119,6 +123,11 @@ class Settings(BaseSettings):
             )
         if self.google_oauth_client_secret and not self.google_oauth_client_id:
             raise RuntimeError("GOOGLE_OAUTH_CLIENT_SECRET défini sans CLIENT_ID")
+        if not self.hub_owner_email or "@" not in self.hub_owner_email:
+            raise RuntimeError(
+                "HUB_OWNER_EMAIL manquant ou invalide. "
+                "Définis-le dans .env : HUB_OWNER_EMAIL=ton@email.com"
+            )
 
 
 @lru_cache

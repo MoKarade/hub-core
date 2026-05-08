@@ -14,18 +14,20 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import Task as TaskModel
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 TASKS_API = "https://tasks.googleapis.com/tasks/v1"
 
 
 class TasksSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     show_completed: bool = True
 
 
@@ -167,7 +169,7 @@ async def sync_tasks(
 
 
 class TaskToggleRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     completed: bool
 
 
@@ -230,7 +232,7 @@ async def toggle_task(
 
 
 class TaskUpdateRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     title: str | None = None
     notes: str | None = None
     due_at: datetime | None = None
@@ -306,7 +308,7 @@ async def update_task(
 
 
 class TaskCreateRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     tasklist_id: str
     title: str = Field(..., min_length=1, max_length=500)
     notes: str | None = None
@@ -386,7 +388,7 @@ async def create_task(
 async def delete_task(
     task_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+    user_email: Annotated[str, Query()] = _OWNER_EMAIL,
 ) -> dict[str, str]:
     """Supprime une tache. Sync avec Google Tasks API."""
     access_token = await _resolve_token(db, user_email)

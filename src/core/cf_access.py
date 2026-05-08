@@ -114,10 +114,10 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
         "/v1/health",
         "/v1/ready",
         "/",
-        "/docs",
-        "/redoc",
-        "/openapi.json",
         "/v1/oauth/callback",  # callback Google, pas via Cloudflare
+        # /docs, /redoc, /openapi.json intentionnellement absents :
+        # en dev (CF Access non configuré) → middleware transparent, Swagger accessible.
+        # en prod (CF Access configuré) → Swagger protégé comme tout le reste.
     }
 
     async def dispatch(self, request: Request, call_next):
@@ -149,6 +149,6 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=401, content={"detail": "JWT expiré"})
         except pyjwt.InvalidTokenError as e:
             logger.warning("cf_access_invalid_token", error=str(e), path=request.url.path)
-            return JSONResponse(status_code=401, content={"detail": f"JWT invalide : {e}"})
+            return JSONResponse(status_code=401, content={"detail": "JWT invalide"})
 
         return await call_next(request)

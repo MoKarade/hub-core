@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import CalendarEvent
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
@@ -21,12 +22,13 @@ from src.services.oauth_google import get_valid_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 GCAL_API = "https://www.googleapis.com/calendar/v3"
 
 
 class CalSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     days_back: int = Field(default=365, ge=1, le=10000)
     days_forward: int = Field(default=180, ge=0, le=10000)
     max_results_per_calendar: int = Field(default=2500, ge=1, le=10000)

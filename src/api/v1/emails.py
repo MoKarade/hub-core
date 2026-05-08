@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import Email
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
@@ -41,6 +42,7 @@ from src.services.oauth_google import get_valid_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/emails", tags=["emails"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 
@@ -51,7 +53,7 @@ GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 
 
 class SyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     max_results: int = Field(default=500, ge=1, le=100000)
     """Cap sur le nombre d'emails a importer en 1 sync. Mets 100000 pour ~tout."""
 
@@ -239,7 +241,7 @@ def _parse_email_message(msg: dict[str, Any]) -> dict[str, Any]:
     recipients = _parse_recipients(_header(headers, "To"))
     recipients += _parse_recipients(_header(headers, "Cc"))
 
-    body_text, body_html = _extract_body(payload)
+    body_text, _ = _extract_body(payload)  # body_html non persisté (redondant + volumineux)
     labels = msg.get("labelIds", []) or []
 
     return {
@@ -252,7 +254,7 @@ def _parse_email_message(msg: dict[str, Any]) -> dict[str, Any]:
         "sent_at": sent_at,
         "snippet": (msg.get("snippet") or "")[:500],
         "body_text": body_text,
-        "body_html": body_html,
+        "body_html": None,
         "labels": labels,
         "has_attachments": _has_attachments(payload),
         "is_unread": "UNREAD" in labels,

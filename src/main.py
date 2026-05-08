@@ -55,8 +55,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
     )
 
     # Cloudflare Access JWT validation (transparent en dev local : pas de team_domain).
@@ -67,12 +67,14 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {
+        info: dict[str, str] = {
             "name": "Personal Data Hub",
             "version": "0.1.0",
-            "docs": "/docs",
             "health": "/v1/health",
         }
+        if not settings.is_production:
+            info["docs"] = "/docs"
+        return info
 
     return app
 

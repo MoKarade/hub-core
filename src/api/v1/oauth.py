@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.crypto import decrypt_str
-from src.core.logging import logger
+from src.core.logging import logger, mask_email
 from src.db.models.oauth_token import OAuthToken
 from src.db.session import get_db
 from src.services.oauth_google import (
@@ -187,7 +187,7 @@ async def oauth_callback(
         scope=token_data.get("scope", ""),
     )
 
-    logger.info("oauth_token_saved", service=service, user_email=user_email)
+    logger.info("oauth_token_saved", service=service, user_email=mask_email(user_email))
     return RedirectResponse(url=f"{frontend_url}/settings?oauth_success={service}", status_code=302)
 
 

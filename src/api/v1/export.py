@@ -22,7 +22,7 @@ import zipfile
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,10 +51,13 @@ from src.db.models import (
     Transaction,
     YouTubeActivity,
 )
+from src.core.config import get_settings
+from src.core.rate_limit import rate_limit
 from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/export", tags=["export"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -120,9 +123,13 @@ async def _table_to_csv(
     return buf.getvalue().encode("utf-8"), len(rows)
 
 
-@router.get("/all")
+@router.get("/all", dependencies=[Depends(rate_limit(2, 300))])
 async def export_all(
     db: Annotated[AsyncSession, Depends(get_db)],
+    confirm: Annotated[
+        str,
+        Query(description="Doit valoir 'oui' pour confirmer l'export total"),
+    ] = "",
     include_email_bodies: Annotated[
         bool,
         Query(description="Inclure le corps des emails (gros)"),
@@ -132,7 +139,14 @@ async def export_all(
 
     1 CSV par table + manifest.json avec counts + generated_at.
     Tokens OAuth chiffres = exclus (pas exportable en clair, par design).
+
+    Requiert ?confirm=oui pour éviter les déclenchements accidentels.
     """
+    if confirm != "oui":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Paramètre ?confirm=oui requis pour déclencher l'export total.",
+        )
     started = datetime.now(UTC)
 
     # On streame le ZIP en memoire (simpler que tempfile, OK pour <100 MB)
@@ -165,7 +179,7 @@ async def export_all(
 
         manifest: dict[str, Any] = {
             "generated_at": started.isoformat(),
-            "user_email": "marc.richard4@gmail.com",
+            "user_email": _OWNER_EMAIL,
             "include_email_bodies": include_email_bodies,
             "tables": counts,
             "total_rows": sum(c for c in counts.values() if c > 0),

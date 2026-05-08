@@ -69,7 +69,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.crypto import decrypt_str, encrypt_str
+from src.core.logging import mask_email
+from src.core.rate_limit import rate_limit
 from src.db.models.health_metric import HealthMetric
 from src.db.models.oauth_token import OAuthToken
 from src.db.session import get_db
@@ -80,11 +83,13 @@ router = APIRouter(prefix="/garmin", tags=["garmin"])
 
 GARMIN_PROVIDER = "garmin"
 GARMIN_SERVICE = "connect"
-DEFAULT_USER = "marc.richard4@gmail.com"
+DEFAULT_USER: str = get_settings().hub_owner_email
 
 # Cache mémoire des sessions en attente de MFA (single-process, single-user → OK).
-# {session_id: {"email": str, "password": str}}
-_mfa_sessions: dict[str, dict[str, str]] = {}
+# {session_id: {"email": str, "password": str, "created_at": float}}
+# TTL 5 minutes : mot de passe ne doit pas rester en RAM indéfiniment.
+_MFA_SESSION_TTL = 300.0
+_mfa_sessions: dict[str, dict[str, object]] = {}
 
 
 class _MfaRequiredError(Exception):
@@ -501,7 +506,7 @@ async def _save_tokens(db: AsyncSession, user_email: str, tokens_json: str) -> N
 # ---------------------------------------------------------------------------
 
 
-@router.post("/connect", response_model=GarminConnectResponse)
+@router.post("/connect", response_model=GarminConnectResponse, dependencies=[Depends(rate_limit(2, 300))])
 async def garmin_connect(
     payload: GarminConnectRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -515,6 +520,12 @@ async def garmin_connect(
         POST {email, password}                     →  {status: "mfa_required", session_id}
         POST {session_id, mfa_code}  →  {status: "connected"}
     """
+    # Purge proactive des sessions MFA expirées (mot de passe en RAM ≤ TTL).
+    _now = time.monotonic()
+    _expired_keys = [k for k, v in _mfa_sessions.items() if _now - float(v["created_at"]) > _MFA_SESSION_TTL]
+    for _k in _expired_keys:
+        _mfa_sessions.pop(_k, None)
+
     # ── Étape 2 MFA : session_id + mfa_code ─────────────────────────────
     if payload.session_id:
         if not payload.mfa_code:
@@ -523,7 +534,8 @@ async def garmin_connect(
                 "session_id fourni mais mfa_code manquant",
             )
         session = _mfa_sessions.pop(payload.session_id, None)
-        if session is None:
+        if session is None or (time.monotonic() - float(session["created_at"])) > _MFA_SESSION_TTL:
+            _mfa_sessions.pop(payload.session_id, None)  # purge si expiré
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "Session MFA expirée ou invalide — recommence avec {email, password}",
@@ -535,16 +547,17 @@ async def garmin_connect(
                 _login_sync, email, password, payload.mfa_code
             )
         except ValueError as e:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e)) from e
+            logger.warning("garmin_mfa_auth_failed", error=str(e)[:200])
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Code MFA invalide ou session expirée") from e
 
         if still_needs_mfa or not tokens_json:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Code MFA incorrect ou expiré")
 
         await _save_tokens(db, email, tokens_json)
-        logger.info("garmin_connected_mfa", email=email)
+        logger.info("garmin_connected_mfa", email=mask_email(email))
         return GarminConnectResponse(
             status="connected",
-            message=f"Tokens Garmin sauvegardés pour {email}. Lance /v1/garmin/sync.",
+            message="Tokens Garmin sauvegardés (MFA). Lance /v1/garmin/sync.",
         )
 
     # ── Étape 1 : login initial ──────────────────────────────────────────
@@ -559,11 +572,16 @@ async def garmin_connect(
             _login_sync, payload.email, payload.password, payload.mfa_code
         )
     except ValueError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e)) from e
+        logger.warning("garmin_connect_auth_failed", error=str(e)[:200])
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Identifiants Garmin invalides") from e
 
     if needs_mfa:
         session_id = str(uuid.uuid4())
-        _mfa_sessions[session_id] = {"email": payload.email, "password": payload.password}
+        _mfa_sessions[session_id] = {
+            "email": payload.email,
+            "password": payload.password,
+            "created_at": time.monotonic(),
+        }
         return GarminConnectResponse(
             status="mfa_required",
             message=(
@@ -574,14 +592,14 @@ async def garmin_connect(
         )
 
     await _save_tokens(db, payload.email, tokens_json)  # type: ignore[arg-type]
-    logger.info("garmin_connected", email=payload.email)
+    logger.info("garmin_connected", email=mask_email(payload.email))
     return GarminConnectResponse(
         status="connected",
-        message=f"Tokens Garmin sauvegardés pour {payload.email}. Lance /v1/garmin/sync.",
+        message="Tokens Garmin sauvegardés. Lance /v1/garmin/sync.",
     )
 
 
-@router.post("/sync", response_model=GarminSyncResponse)
+@router.post("/sync", response_model=GarminSyncResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def garmin_sync(
     payload: GarminSyncRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -660,7 +678,7 @@ async def garmin_sync(
     await db.commit()
     logger.info(
         "garmin_sync_done",
-        email=payload.user_email,
+        email=mask_email(payload.user_email),
         days=payload.days_back,
         ingested=ingested,
         updated=updated,

@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import Contact
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/contacts", tags=["contacts"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 PEOPLE_API = "https://people.googleapis.com/v1"
 PERSON_FIELDS = (
@@ -29,7 +31,7 @@ PERSON_FIELDS = (
 
 
 class ContactsSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     page_size: int = Field(default=1000, ge=1, le=2000)
 
 

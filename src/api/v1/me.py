@@ -23,6 +23,7 @@ from src.db.models import (
     DriveFile,
     Email,
     HealthMetric,
+    LocationAddress,
     LocationVisit,
     NewsArticle,
     Photo,
@@ -426,22 +427,35 @@ async def me_dashboard(
         locations.last_home_iso = _aware(last_home).isoformat()
         locations.days_since_home = (now - _aware(last_home)).days
 
-    # Most visited place name (via place_id join trop complex - on prend le top semantic_type)
+    # Most visited place — top place_id + resolve to human label via location_addresses
     try:
         top_q = (
-            select(LocationVisit.place_id, func.count().label("c"))
+            select(LocationVisit.place_id, LocationVisit.lat, LocationVisit.lng, func.count().label("c"))
             .where(LocationVisit.place_id.is_not(None))
             .where(*([LocationVisit.start_time >= cutoff_dt] if cutoff_dt else []))
-            .group_by(LocationVisit.place_id)
+            .group_by(LocationVisit.place_id, LocationVisit.lat, LocationVisit.lng)
             .order_by(desc("c"))
             .limit(1)
         )
         top_row = (await db.execute(top_q)).one_or_none()
         if top_row:
-            locations.most_visited_place = top_row[0] if top_row[0] else "?"
-            locations.most_visited_count = int(top_row[1])
-    except Exception:
-        pass
+            _place_id, _lat, _lng, _count = top_row
+            locations.most_visited_count = int(_count)
+            # Resolve via reverse-geocode cache (grid cell lat_e4/lng_e4)
+            label: str | None = None
+            if _lat is not None and _lng is not None:
+                lat_e4 = round(float(_lat) * 10_000)
+                lng_e4 = round(float(_lng) * 10_000)
+                addr_row = (await db.execute(
+                    select(LocationAddress)
+                    .where(LocationAddress.lat_e4 == lat_e4, LocationAddress.lng_e4 == lng_e4)
+                    .limit(1)
+                )).scalar_one_or_none()
+                if addr_row:
+                    label = addr_row.short_label()
+            locations.most_visited_place = label or (_place_id[:30] if _place_id else "?")
+    except Exception as e:
+        logger.debug("me_locations_top_place_failed err=%r", e)
 
     # ── Screen time section ──────────────────────────────────────────────
     screen = ScreenTimeSection()
@@ -458,8 +472,8 @@ async def me_dashboard(
         screen.browser_top_domains = [
             {"domain": r[0], "count": int(r[1])} for r in (await db.execute(top_dom_q)).all()
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("me_screen_browser_failed err=%r", e)
 
     # Gaming : delta entre snapshots oldest/newest sur la periode
     try:
@@ -486,8 +500,8 @@ async def me_dashboard(
         screen.gaming_top_games = [{"name": n, "minutes": m} for n, m in gaming_per_game[:5]]
         if gaming_total > 0:
             counts.steam_games_played = len(gaming_per_game)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("me_screen_gaming_failed err=%r", e)
 
     # Streaming runtime
     try:
@@ -499,8 +513,8 @@ async def me_dashboard(
         )
         if streaming_runtime:
             screen.streaming_total_runtime_h = round(float(streaming_runtime) / 60, 1)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("me_screen_streaming_failed err=%r", e)
 
     # ── Productivity section ─────────────────────────────────────────────
     productivity = ProductivitySection()

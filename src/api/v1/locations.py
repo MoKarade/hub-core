@@ -31,11 +31,13 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.events import broadcast
+from src.core.config import get_settings
 from src.db.models import LocationActivity, LocationAddress, LocationPoint, LocationVisit
 from src.db.session import SessionLocal, get_db
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/locations", tags=["locations"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2009,8 +2011,7 @@ async def _geocode_worker(only_unknown: bool, max_cells: int) -> None:
                                 "zoom": 18,
                             },
                             headers={
-                                "User-Agent": "PersonalDataHub/1.0 "
-                                "(private use, marc.richard4@gmail.com)",
+                                "User-Agent": f"PersonalDataHub/1.0 (private use, {_OWNER_EMAIL})",
                             },
                         )
                         r.raise_for_status()
@@ -2666,7 +2667,7 @@ async def reverse_geocode(
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": lat, "lon": lng, "format": "jsonv2", "accept-language": "fr,en"},
                 headers={
-                    "User-Agent": "PersonalDataHub/1.0 (private use, marc.richard4@gmail.com)"
+                    "User-Agent": f"PersonalDataHub/1.0 (private use, {_OWNER_EMAIL})"
                 },
             )
             r.raise_for_status()

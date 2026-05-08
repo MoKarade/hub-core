@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import HealthMetric
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
@@ -30,6 +31,7 @@ from src.services.oauth_google import get_valid_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health-data", tags=["health-data"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 FIT_API = "https://www.googleapis.com/fitness/v1"
 
@@ -62,7 +64,7 @@ FIT_SESSIONS_API = "https://www.googleapis.com/fitness/v1/users/me/sessions"
 
 
 class HealthSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     days_back: int = Field(default=90, ge=1, le=3650)
 
 

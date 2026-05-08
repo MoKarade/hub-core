@@ -14,18 +14,20 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models import DriveFile
 from src.db.session import get_db
 from src.services.oauth_google import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/drive", tags=["drive"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 
 
 class DriveSyncRequest(BaseModel):
-    user_email: str = Field(default="marc.richard4@gmail.com")
+    user_email: str = Field(default=_OWNER_EMAIL)
     max_results: int = Field(default=2000, ge=1, le=100000)
     only_my_files: bool = Field(
         default=True,
@@ -89,7 +91,7 @@ def _parse_file(f: dict[str, Any]) -> dict[str, Any]:
 @router.delete("/wipe")
 async def wipe_drive(
     db: Annotated[AsyncSession, Depends(get_db)],
-    user_email: Annotated[str, Query()] = "marc.richard4@gmail.com",
+    user_email: Annotated[str, Query()] = _OWNER_EMAIL,
 ) -> dict[str, int]:
     """Vide tous les DriveFile pour ce user (avant resync clean)."""
     from sqlalchemy import delete as sql_delete
@@ -237,7 +239,7 @@ _ROOT_FOLDER_TTL_SECONDS = 3600
 
 
 async def _get_root_folder_id(
-    db: AsyncSession, user_email: str = "marc.richard4@gmail.com"
+    db: AsyncSession, user_email: str = _OWNER_EMAIL
 ) -> str | None:
     """Recupere le vrai ID du dossier racine Drive (alias 'root' -> ID reel).
     Drive v3 about n'a PAS rootFolderId, faut faire files.get('root').

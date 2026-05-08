@@ -22,11 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.db.models.removal_request import RemovalRequest
 from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/privacy", tags=["privacy"])
+_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -68,7 +70,7 @@ la {request_type_fr_full} que votre organisation detient a mon sujet.
 
 Mes informations d'identification :
 - Nom complet : Marc Richard
-- Courriel(s) potentiellement enregistres : marc.richard4@gmail.com{extra_emails}
+- Courriel(s) potentiellement enregistres : {_OWNER_EMAIL}{extra_emails}
 
 Conformement a la loi, vous disposez de 30 jours pour repondre a cette demande, \
 faute de quoi je porterai plainte aupres de la Commission d'acces a l'information \
