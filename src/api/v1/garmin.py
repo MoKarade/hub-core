@@ -506,7 +506,9 @@ async def _save_tokens(db: AsyncSession, user_email: str, tokens_json: str) -> N
 # ---------------------------------------------------------------------------
 
 
-@router.post("/connect", response_model=GarminConnectResponse, dependencies=[Depends(rate_limit(2, 300))])
+@router.post(
+    "/connect", response_model=GarminConnectResponse, dependencies=[Depends(rate_limit(2, 300))]
+)
 async def garmin_connect(
     payload: GarminConnectRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -522,7 +524,9 @@ async def garmin_connect(
     """
     # Purge proactive des sessions MFA expirées (mot de passe en RAM ≤ TTL).
     _now = time.monotonic()
-    _expired_keys = [k for k, v in _mfa_sessions.items() if _now - float(v["created_at"]) > _MFA_SESSION_TTL]
+    _expired_keys = [
+        k for k, v in _mfa_sessions.items() if _now - float(v["created_at"]) > _MFA_SESSION_TTL
+    ]
     for _k in _expired_keys:
         _mfa_sessions.pop(_k, None)
 
@@ -548,7 +552,9 @@ async def garmin_connect(
             )
         except ValueError as e:
             logger.warning("garmin_mfa_auth_failed", error=str(e)[:200])
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Code MFA invalide ou session expirée") from e
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Code MFA invalide ou session expirée"
+            ) from e
 
         if still_needs_mfa or not tokens_json:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Code MFA incorrect ou expiré")

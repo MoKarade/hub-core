@@ -18,7 +18,7 @@ async def test_export_with_browser_data(client) -> None:
         json={"items": [{"url": "https://exp.com", "visited_at": now.isoformat()}]},
     )
 
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     assert r.status_code == 200
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     assert "manifest.json" in zf.namelist()
@@ -36,7 +36,7 @@ async def test_export_preview_keeps_zero_for_empty_tables(client) -> None:
 @pytest.mark.asyncio
 async def test_export_returns_zip_content_type(client) -> None:
     """Headers content-type correct."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     assert r.headers["content-type"] == "application/zip"
     assert "Content-Disposition" in r.headers or "content-disposition" in r.headers
 
@@ -44,7 +44,7 @@ async def test_export_returns_zip_content_type(client) -> None:
 @pytest.mark.asyncio
 async def test_export_filename_has_timestamp(client) -> None:
     """Le filename suggere a un timestamp YYYYMMDD."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     cd = r.headers.get("content-disposition") or r.headers.get("Content-Disposition", "")
     assert "hub-export-" in cd
     assert ".zip" in cd

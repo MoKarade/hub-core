@@ -17,8 +17,6 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-logger = logging.getLogger(__name__)
-
 import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -35,6 +33,8 @@ from src.db.models import (
     Transaction,
 )
 from src.db.session import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/insights", tags=["insights"])
 

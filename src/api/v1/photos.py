@@ -463,8 +463,12 @@ async def photos_stats(db: Annotated[AsyncSession, Depends(get_db)]) -> PhotosSt
 class GeotagTimelineRequest(BaseModel):
     user_email: str = Field(default=_OWNER_EMAIL)
     max_photos: int = Field(default=5000, ge=1, le=100000)
-    window_minutes: int = Field(default=30, ge=1, le=120, description="Tolerance temporelle en minutes")
-    do_geocode: bool = Field(default=False, description="Reverse geocode via Nominatim (lent, 1 req/s)")
+    window_minutes: int = Field(
+        default=30, ge=1, le=120, description="Tolerance temporelle en minutes"
+    )
+    do_geocode: bool = Field(
+        default=False, description="Reverse geocode via Nominatim (lent, 1 req/s)"
+    )
 
 
 class GeotagTimelineResponse(BaseModel):
@@ -497,21 +501,29 @@ async def geotag_from_timeline(
 
     # 1. Photos sans GPS
     photos_rows = (
-        await db.execute(
-            select(Photo)
-            .where(
-                Photo.user_email == payload.user_email,
-                Photo.latitude.is_(None),
+        (
+            await db.execute(
+                select(Photo)
+                .where(
+                    Photo.user_email == payload.user_email,
+                    Photo.latitude.is_(None),
+                )
+                .order_by(Photo.creation_time)
+                .limit(payload.max_photos)
             )
-            .order_by(Photo.creation_time)
-            .limit(payload.max_photos)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not photos_rows:
         return GeotagTimelineResponse(
-            processed=0, geotagged=0, from_points=0,
-            from_visits=0, geocoded=0, errors=0,
+            processed=0,
+            geotagged=0,
+            from_points=0,
+            from_visits=0,
+            geocoded=0,
+            errors=0,
             duration_seconds=round(time.monotonic() - start, 2),
         )
 
@@ -521,31 +533,44 @@ async def geotag_from_timeline(
 
     # 2. Charge tous les LocationPoints dans la plage (1 requete)
     lp_rows = (
-        await db.execute(
-            select(LocationPoint)
-            .where(
-                LocationPoint.timestamp_utc >= min_t,
-                LocationPoint.timestamp_utc <= max_t,
+        (
+            await db.execute(
+                select(LocationPoint)
+                .where(
+                    LocationPoint.timestamp_utc >= min_t,
+                    LocationPoint.timestamp_utc <= max_t,
+                )
+                .order_by(LocationPoint.timestamp_utc)
             )
-            .order_by(LocationPoint.timestamp_utc)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     # 3. Charge tous les LocationVisits qui chevauchent la plage (fallback)
     lv_rows = (
-        await db.execute(
-            select(LocationVisit)
-            .where(
-                LocationVisit.start_time <= max_t,
-                LocationVisit.end_time >= min_t,
-                LocationVisit.lat.isnot(None),
+        (
+            await db.execute(
+                select(LocationVisit)
+                .where(
+                    LocationVisit.start_time <= max_t,
+                    LocationVisit.end_time >= min_t,
+                    LocationVisit.lat.isnot(None),
+                )
+                .order_by(LocationVisit.start_time)
             )
-            .order_by(LocationVisit.start_time)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     # Index bisect sur les timestamps des LocationPoints
-    lp_timestamps = [lp.timestamp_utc.replace(tzinfo=UTC) if lp.timestamp_utc.tzinfo is None else lp.timestamp_utc for lp in lp_rows]
+    lp_timestamps = [
+        lp.timestamp_utc.replace(tzinfo=UTC)
+        if lp.timestamp_utc.tzinfo is None
+        else lp.timestamp_utc
+        for lp in lp_rows
+    ]
 
     processed = 0
     geotagged = 0
@@ -557,12 +582,17 @@ async def geotag_from_timeline(
     reverse_geocode_fn = None
     if payload.do_geocode:
         from src.services.photo_gps import reverse_geocode as _rg
+
         reverse_geocode_fn = _rg
 
     for photo in photos_rows:
         processed += 1
         try:
-            photo_ts = photo.creation_time.replace(tzinfo=UTC) if photo.creation_time.tzinfo is None else photo.creation_time
+            photo_ts = (
+                photo.creation_time.replace(tzinfo=UTC)
+                if photo.creation_time.tzinfo is None
+                else photo.creation_time
+            )
             lat: float | None = None
             lng: float | None = None
             source = ""
@@ -578,7 +608,11 @@ async def geotag_from_timeline(
                 best_lp = None
                 best_delta = timedelta.max
                 for lp in candidates:
-                    lp_ts = lp.timestamp_utc.replace(tzinfo=UTC) if lp.timestamp_utc.tzinfo is None else lp.timestamp_utc
+                    lp_ts = (
+                        lp.timestamp_utc.replace(tzinfo=UTC)
+                        if lp.timestamp_utc.tzinfo is None
+                        else lp.timestamp_utc
+                    )
                     delta = abs(photo_ts - lp_ts)
                     if delta <= window and delta < best_delta:
                         best_delta = delta
@@ -591,8 +625,16 @@ async def geotag_from_timeline(
             # --- Fallback LocationVisit ---
             if lat is None:
                 for lv in lv_rows:
-                    lv_start = lv.start_time.replace(tzinfo=UTC) if lv.start_time.tzinfo is None else lv.start_time
-                    lv_end = lv.end_time.replace(tzinfo=UTC) if lv.end_time.tzinfo is None else lv.end_time
+                    lv_start = (
+                        lv.start_time.replace(tzinfo=UTC)
+                        if lv.start_time.tzinfo is None
+                        else lv.start_time
+                    )
+                    lv_end = (
+                        lv.end_time.replace(tzinfo=UTC)
+                        if lv.end_time.tzinfo is None
+                        else lv.end_time
+                    )
                     if lv_start <= photo_ts <= lv_end:
                         lat = float(lv.lat)
                         lng = float(lv.lng)

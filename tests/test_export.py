@@ -27,7 +27,7 @@ async def test_export_preview_returns_counts(client) -> None:
 @pytest.mark.asyncio
 async def test_export_all_returns_zip(client) -> None:
     """GET /export/all retourne un ZIP valide avec CSV + manifest + README."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
 
@@ -60,7 +60,7 @@ async def test_export_all_returns_zip(client) -> None:
 @pytest.mark.asyncio
 async def test_export_excludes_email_bodies_by_default(client) -> None:
     """Sans flag, manifest indique include_email_bodies=False."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     import json
 
@@ -71,7 +71,7 @@ async def test_export_excludes_email_bodies_by_default(client) -> None:
 @pytest.mark.asyncio
 async def test_export_with_email_bodies_flag(client) -> None:
     """Avec ?include_email_bodies=true, manifest le reflete."""
-    r = await client.get("/v1/export/all?include_email_bodies=true")
+    r = await client.get("/v1/export/all?confirm=oui&include_email_bodies=true")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     import json
 

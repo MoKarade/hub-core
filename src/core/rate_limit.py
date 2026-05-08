@@ -24,6 +24,7 @@ def rate_limit(max_requests: int, window_seconds: float):
         max_requests: Nombre max d'appels autorisés dans la fenêtre.
         window_seconds: Durée de la fenêtre glissante en secondes.
     """
+
     async def _check(request: Request) -> None:
         key = request.url.path
         now = time.monotonic()

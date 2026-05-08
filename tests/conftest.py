@@ -31,6 +31,7 @@ from src.db.models import (  # noqa: F401
     OAuthToken,
     Transaction,
 )
+from src.core.rate_limit import _buckets as _rate_buckets
 from src.db.session import get_db
 from src.main import app
 
@@ -69,12 +70,14 @@ async def client(engine) -> AsyncGenerator[AsyncClient]:
                 await session.close()
 
     app.dependency_overrides[get_db] = _get_db_override
+    _rate_buckets.clear()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
     app.dependency_overrides.clear()
+    _rate_buckets.clear()
 
 
 def make_dedup_hash(seed: str) -> str:

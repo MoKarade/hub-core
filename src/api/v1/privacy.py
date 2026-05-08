@@ -194,6 +194,7 @@ def _generate_email(req: RemovalRequest, extra_emails: list[str] | None = None) 
         request_type_fr_full=REQUEST_TYPE_FULL.get(req.request_type, req.request_type),
         extra_emails=extras,
         request_specifics=REQUEST_SPECIFICS.get(req.request_type, ""),
+        _OWNER_EMAIL=_OWNER_EMAIL,
     )
     subject = (
         f"Demande {LEGAL_BASIS_LABEL.get(req.legal_basis, 'Privacy')} "

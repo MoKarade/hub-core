@@ -430,7 +430,12 @@ async def me_dashboard(
     # Most visited place — top place_id + resolve to human label via location_addresses
     try:
         top_q = (
-            select(LocationVisit.place_id, LocationVisit.lat, LocationVisit.lng, func.count().label("c"))
+            select(
+                LocationVisit.place_id,
+                LocationVisit.lat,
+                LocationVisit.lng,
+                func.count().label("c"),
+            )
             .where(LocationVisit.place_id.is_not(None))
             .where(*([LocationVisit.start_time >= cutoff_dt] if cutoff_dt else []))
             .group_by(LocationVisit.place_id, LocationVisit.lat, LocationVisit.lng)
@@ -446,11 +451,13 @@ async def me_dashboard(
             if _lat is not None and _lng is not None:
                 lat_e4 = round(float(_lat) * 10_000)
                 lng_e4 = round(float(_lng) * 10_000)
-                addr_row = (await db.execute(
-                    select(LocationAddress)
-                    .where(LocationAddress.lat_e4 == lat_e4, LocationAddress.lng_e4 == lng_e4)
-                    .limit(1)
-                )).scalar_one_or_none()
+                addr_row = (
+                    await db.execute(
+                        select(LocationAddress)
+                        .where(LocationAddress.lat_e4 == lat_e4, LocationAddress.lng_e4 == lng_e4)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
                 if addr_row:
                     label = addr_row.short_label()
             locations.most_visited_place = label or (_place_id[:30] if _place_id else "?")

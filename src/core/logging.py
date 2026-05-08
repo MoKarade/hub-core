@@ -22,7 +22,9 @@ def setup_logging(level: str = "INFO") -> None:
 
     app_env = os.getenv("APP_ENV", "dev").lower()
     is_production = app_env in ("prod", "production")
-    renderer = structlog.processors.JSONRenderer() if is_production else structlog.dev.ConsoleRenderer()
+    renderer = (
+        structlog.processors.JSONRenderer() if is_production else structlog.dev.ConsoleRenderer()
+    )
 
     structlog.configure(
         processors=[

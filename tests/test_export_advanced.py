@@ -14,7 +14,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_export_zip_contains_readme_with_counts(client) -> None:
     """README.txt liste les tables avec leurs counts."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     readme = zf.read("README.txt").decode("utf-8")
     assert "Personal Data Hub" in readme
@@ -24,7 +24,7 @@ async def test_export_zip_contains_readme_with_counts(client) -> None:
 @pytest.mark.asyncio
 async def test_export_csv_has_headers(client) -> None:
     """Chaque CSV exporte commence par une ligne de headers."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     csv_files = [n for n in zf.namelist() if n.endswith(".csv")]
     for name in csv_files:
@@ -51,7 +51,7 @@ async def test_export_browser_history_in_zip(client) -> None:
         },
     )
 
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     # Il devrait y avoir un browser_history.csv ou pas (selon si on l'a ajoute
     # a EXPORT_TABLES). Pour l'instant on teste juste qu'on a un ZIP valide.
@@ -66,7 +66,7 @@ async def test_export_csv_has_data_after_inserts(client) -> None:
         json={"company_name": "TestExport", "request_type": "deletion"},
     )
 
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     rr_csv = zf.read("removal_requests.csv").decode("utf-8")
     reader = csv.DictReader(io.StringIO(rr_csv))
@@ -78,7 +78,7 @@ async def test_export_csv_has_data_after_inserts(client) -> None:
 @pytest.mark.asyncio
 async def test_export_manifest_structure(client) -> None:
     """manifest.json a tous les champs attendus."""
-    r = await client.get("/v1/export/all")
+    r = await client.get("/v1/export/all?confirm=oui")
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     manifest = json.loads(zf.read("manifest.json"))
     assert "generated_at" in manifest
