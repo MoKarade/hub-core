@@ -26,7 +26,7 @@ import sqlalchemy as sa
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -442,9 +442,11 @@ async def list_location_points(
     max_lng: float | None = Query(default=None, ge=-180, le=180),
     activity_type: str | None = Query(default=None),
     source: str | None = Query(default=None),
-    limit: int = Query(default=500, ge=1, le=500000),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=200000),
+    offset: int = Query(default=0, ge=0, le=50000),
 ) -> list[LocationPoint]:
+    if offset > 10000:
+        logger.warning("location_points_high_offset offset=%d — prefer date filter", offset)
     q = (
         select(LocationPoint)
         .order_by(LocationPoint.timestamp_utc.desc())
@@ -508,8 +510,8 @@ async def list_visits(
     max_lat: float | None = Query(default=None, ge=-90, le=90),
     min_lng: float | None = Query(default=None, ge=-180, le=180),
     max_lng: float | None = Query(default=None, ge=-180, le=180),
-    limit: int = Query(default=200, ge=1, le=500000),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=100000),
+    offset: int = Query(default=0, ge=0, le=20000),
 ) -> list[LocationVisit]:
     q = select(LocationVisit).order_by(LocationVisit.start_time.desc()).limit(limit).offset(offset)
     if start_date:
@@ -540,30 +542,26 @@ async def list_visits(
 async def get_location_stats(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LocationStats:
-    total_visits = (await db.execute(select(func.count()).select_from(LocationVisit))).scalar_one()
-    unique_places = (
+    # Consolidation : 3 requetes au lieu de 8 (visits aggregat, points count, activities count)
+    visits_row = (
         await db.execute(
-            select(func.count(func.distinct(LocationVisit.place_id))).where(
-                LocationVisit.place_id.is_not(None)
+            select(
+                func.count().label("total"),
+                func.count(func.distinct(LocationVisit.place_id)).label("unique_places"),
+                func.sum(case((LocationVisit.semantic_type == "HOME", 1), else_=0)).label("home"),
+                func.sum(case((LocationVisit.semantic_type == "WORK", 1), else_=0)).label("work"),
+                func.min(LocationVisit.start_time).label("earliest"),
+                func.max(LocationVisit.start_time).label("latest"),
             )
         )
-    ).scalar_one()
-    home_visits = (
-        await db.execute(
-            select(func.count())
-            .select_from(LocationVisit)
-            .where(LocationVisit.semantic_type == "HOME")
-        )
-    ).scalar_one()
-    work_visits = (
-        await db.execute(
-            select(func.count())
-            .select_from(LocationVisit)
-            .where(LocationVisit.semantic_type == "WORK")
-        )
-    ).scalar_one()
-    earliest = (await db.execute(select(func.min(LocationVisit.start_time)))).scalar_one()
-    latest = (await db.execute(select(func.max(LocationVisit.start_time)))).scalar_one()
+    ).one()
+    total_visits = int(visits_row.total or 0)
+    unique_places = int(visits_row.unique_places or 0)
+    home_visits = int(visits_row.home or 0)
+    work_visits = int(visits_row.work or 0)
+    earliest = visits_row.earliest
+    latest = visits_row.latest
+
     total_points = (
         await db.execute(
             select(func.count())

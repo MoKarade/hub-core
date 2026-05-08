@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.crypto import decrypt_str
 from src.core.logging import logger, mask_email
+from src.core.rate_limit import rate_limit
 from src.db.models.oauth_token import OAuthToken
 from src.db.session import get_db
 from src.services.oauth_google import (
@@ -50,15 +51,18 @@ _STATE_TTL_SECONDS = 600
 
 
 def _cleanup_old_states() -> None:
-    """Retire les states expirés du store (appelé à chaque start)."""
+    """Retire les states expirés du store (appelé à chaque start).
+
+    Construit la liste des cles expirees + les pop en une passe atomique
+    (snapshot via list() puis dict.pop). Asyncio peut interrompre une coroutine
+    entre operations, donc on snapshot d'abord pour eviter les "dictionary
+    changed size during iteration".
+    """
     now = datetime.now(UTC)
-    expired = [
-        k
-        for k, (_, _, ts) in _STATE_STORE.items()
-        if (now - ts).total_seconds() > _STATE_TTL_SECONDS
-    ]
-    for k in expired:
-        _STATE_STORE.pop(k, None)
+    snapshot = list(_STATE_STORE.items())
+    for k, (_, _, ts) in snapshot:
+        if (now - ts).total_seconds() > _STATE_TTL_SECONDS:
+            _STATE_STORE.pop(k, None)
 
 
 # ── Schémas réponse ──────────────────────────────────────────────────────────
@@ -245,7 +249,7 @@ async def oauth_google_revoke(
     return {"status": "revoked", "service": service}
 
 
-@router.post("/cleanup")
+@router.post("/cleanup", dependencies=[Depends(rate_limit(5, 60))])
 async def oauth_cleanup(db: AsyncSession = Depends(get_db)):
     """Supprime de la DB les tokens révoqués qui ont un fallback "all" valide.
 

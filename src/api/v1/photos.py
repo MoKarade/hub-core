@@ -283,7 +283,6 @@ async def enrich_gps(
     Ref : https://developers.google.com/photos/picker (privacy section)
     """
     import asyncio as aio
-    import time
 
     from src.services.photo_gps import (
         download_photo_bytes,
@@ -338,7 +337,19 @@ async def enrich_gps(
             logger.warning("enrich_gps_photo_failed: id=%s err=%r", photo.media_id, e)
             errors += 1
 
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception as e:
+        # Si le commit fail apres N geotaggings reussis, on ne peut pas perdre
+        # silencieusement le travail deja fait. Log error + remonte 500.
+        logger.error(
+            "enrich_gps_commit_failed: lost_photos=%d err=%r", with_gps, e
+        )
+        await db.rollback()
+        raise HTTPException(  # noqa: B904
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"GPS enrich commit failed (les {with_gps} updates GPS sont annulees) : {e}",
+        )
 
     return GpsEnrichResponse(
         processed=processed,

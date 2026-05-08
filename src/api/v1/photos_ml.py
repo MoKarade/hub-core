@@ -28,7 +28,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import FaceCluster, Photo, PhotoEmbedding, PhotoFace
@@ -219,7 +219,31 @@ async def semantic_search(
             "CLIP non installe (pip install -e .[ml])",
         )
 
-    # Charge tous les embeddings (pour <10k photos, OK en memoire)
+    # Postgres + pgvector : recherche cosine native via index HNSW (O(log n))
+    if db.get_bind().dialect.name == "postgresql":
+        vec_literal = "[" + ",".join(f"{float(x):.6f}" for x in query_vec.tolist()) + "]"
+        # On surdimensionne k pour pouvoir filtrer min_score apres
+        sql = text(
+            "SELECT pe.photo_id, p.media_id, p.filename, "
+            "1 - (pe.embedding <=> CAST(:qvec AS vector)) AS score "
+            "FROM photo_embeddings pe "
+            "JOIN photos p ON p.id = pe.photo_id "
+            "ORDER BY pe.embedding <=> CAST(:qvec AS vector) "
+            "LIMIT :k"
+        )
+        rows = (await db.execute(sql, {"qvec": vec_literal, "k": top_k * 3})).all()
+        return [
+            SearchHit(
+                photo_id=r[0],
+                media_id=r[1],
+                filename=r[2],
+                score=float(r[3]),
+            )
+            for r in rows
+            if r[3] >= min_score
+        ][:top_k]
+
+    # SQLite fallback : charge tous les embeddings et calcule en numpy
     stmt = select(
         PhotoEmbedding.photo_id, PhotoEmbedding.embedding, Photo.media_id, Photo.filename
     ).join(Photo, Photo.id == PhotoEmbedding.photo_id)
@@ -235,7 +259,6 @@ async def semantic_search(
     db_vecs = np.array([r[1] for r in rows], dtype=np.float32)
 
     scores = cosine_sim_batch(query_vec, db_vecs)
-    # top-K indices
     top_idx = np.argsort(-scores)[:top_k]
     return [
         SearchHit(

@@ -57,7 +57,6 @@ from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/export", tags=["export"])
-_OWNER_EMAIL: str = get_settings().hub_owner_email
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -94,18 +93,26 @@ EXPORT_TABLES: list[tuple[str, type, list[str]]] = [
 
 async def _table_to_csv(
     db: AsyncSession,
-    model: type,
+    model: type[Any],
     exclude_cols: list[str],
 ) -> tuple[bytes, int]:
-    """Export 1 table en CSV bytes. Retourne (data, row_count)."""
+    """Export 1 table en CSV bytes. Retourne (data, row_count).
+
+    Streame depuis la DB via `db.stream(...)` au lieu de charger toutes les
+    rows en RAM SQLAlchemy. Important pour LocationPoint (186k+) et Email (50k+).
+    Le buffer CSV reste en RAM mais : (a) le texte est plus compact que les
+    objets ORM, (b) `db.expunge_all()` apres relache la session.
+    """
     cols = [c.key for c in model.__table__.columns if c.key not in exclude_cols]
     stmt = select(model)
-    rows = (await db.execute(stmt)).scalars().all()
 
     buf = io.StringIO()
     writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
     writer.writerow(cols)
-    for row in rows:
+
+    count = 0
+    result = await db.stream(stmt)
+    async for row in result.scalars():
         line = []
         for c in cols:
             val = getattr(row, c, None)
@@ -120,7 +127,13 @@ async def _table_to_csv(
             else:
                 line.append(str(val))
         writer.writerow(line)
-    return buf.getvalue().encode("utf-8"), len(rows)
+        count += 1
+        # Relache l'instance ORM tous les 1000 rows pour eviter le buildup memoire
+        if count % 1000 == 0:
+            db.expunge_all()
+
+    db.expunge_all()
+    return buf.getvalue().encode("utf-8"), count
 
 
 @router.get("/all", dependencies=[Depends(rate_limit(2, 300))])
@@ -148,6 +161,7 @@ async def export_all(
             "Paramètre ?confirm=oui requis pour déclencher l'export total.",
         )
     started = datetime.now(UTC)
+    owner_email = get_settings().hub_owner_email
 
     # On streame le ZIP en memoire (simpler que tempfile, OK pour <100 MB)
     zip_buffer = io.BytesIO()
@@ -179,7 +193,7 @@ async def export_all(
 
         manifest: dict[str, Any] = {
             "generated_at": started.isoformat(),
-            "user_email": _OWNER_EMAIL,
+            "user_email": owner_email,
             "include_email_bodies": include_email_bodies,
             "tables": counts,
             "total_rows": sum(c for c in counts.values() if c > 0),
@@ -243,11 +257,15 @@ votre PC personnel ou un cloud chiffre. Ne le partagez avec personne.
     )
 
 
-@router.get("/preview")
+@router.get("/preview", dependencies=[Depends(rate_limit(10, 60))])
 async def export_preview(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Apercu de ce qu'un export contiendrait (counts par table) sans generer le ZIP."""
+    """Apercu de ce qu'un export contiendrait (counts par table) sans generer le ZIP.
+
+    Scanne les 21 tables : rate limite a 10 req/min meme si peu couteux,
+    car n'importe quel acces non-CFAccess peut spammer.
+    """
     from sqlalchemy import func
 
     counts: dict[str, int] = {}
@@ -255,13 +273,15 @@ async def export_preview(
         try:
             n = (await db.execute(select(func.count()).select_from(model))).scalar_one()
             counts[filename] = int(n or 0)
-        except Exception:
+        except Exception as e:
+            logger.warning("export_preview_count_failed table=%s err=%r", filename, e)
             counts[filename] = -1
     # Email separe
     try:
         n = (await db.execute(select(func.count()).select_from(Email))).scalar_one()
         counts["emails.csv"] = int(n or 0)
-    except Exception:
+    except Exception as e:
+        logger.warning("export_preview_count_failed table=emails err=%r", e)
         counts["emails.csv"] = -1
 
     return {

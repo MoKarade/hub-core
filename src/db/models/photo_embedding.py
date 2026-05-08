@@ -1,11 +1,13 @@
 """Modele PhotoEmbedding : embedding CLIP 512-d par photo (Phase 7+).
 
 Stocke 1 vecteur par photo. Permet la recherche semantique : on embed la query
-text, calcule cosine similarity contre toutes les rows, retourne top-K.
+text, calcule cosine similarity, retourne top-K.
 
-Pas de pgvector pour rester DB-agnostic (SQLite + Postgres). Le vecteur est
-stocke en JSON. Pour <10k photos, la recherche en numpy est rapide (<200ms).
-Pour scaler au-dela : ajouter pgvector + index HNSW (ADR futur).
+Postgres : `vector(512)` (pgvector) avec index HNSW pour search O(log n).
+SQLite : fallback JSON list[float] (search numpy en memoire). Voir `EmbeddingType`.
+
+Dimension figee a 512 (ViT-B-32). Pour ViT-L-14 (768) ou autre, prevoir une
+nouvelle table photo_embeddings_v2 ou adapter la migration.
 """
 
 from __future__ import annotations
@@ -13,10 +15,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
+from src.db.types import EmbeddingType
+
+EMBEDDING_DIM = 512
 
 
 class PhotoEmbedding(Base):
@@ -38,8 +43,9 @@ class PhotoEmbedding(Base):
     model_name: Mapped[str] = mapped_column(String(50), nullable=False, default="ViT-B-32")
     """Format: open_clip model name (ex: 'ViT-B-32', 'ViT-L-14')."""
 
-    # Vecteur 512-d (ViT-B-32) ou 768-d (ViT-L-14) en JSON list[float]
-    embedding: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    # Postgres: vector(512) + index HNSW (search natif <=> cosine)
+    # SQLite: JSON list[float] (fallback numpy)
+    embedding: Mapped[list[float]] = mapped_column(EmbeddingType(EMBEDDING_DIM), nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

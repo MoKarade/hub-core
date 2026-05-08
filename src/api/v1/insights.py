@@ -642,7 +642,7 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
                     "avg_prev_7d": round(float(prev), 1) if prev else None,
                 }
     except Exception as e:
-        logger.debug("insights_stats_health_failed err=%r", e)
+        logger.warning("insights_stats_health_failed err=%r", e)
 
     # Finance : depenses 7j vs 7j precedents
     try:
@@ -664,7 +664,7 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
                 "spend_prev_7d_cad": round(float(prev), 2) if prev else 0,
             }
     except Exception as e:
-        logger.debug("insights_stats_finance_failed err=%r", e)
+        logger.warning("insights_stats_finance_failed err=%r", e)
 
     # Locations : visites + jours hors-maison
     try:
@@ -693,7 +693,7 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
             "days_since_last_home": days_since_home,
         }
     except Exception as e:
-        logger.debug("insights_stats_locations_failed err=%r", e)
+        logger.warning("insights_stats_locations_failed err=%r", e)
 
     # Browser : top domaines + total visites 7j (utile pour cross-ref)
     try:
@@ -717,7 +717,7 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
         if n_b or top:
             stats["browser"] = {"visits_7d": int(n_b), "top_domains": top}
     except Exception as e:
-        logger.debug("insights_stats_browser_failed err=%r", e)
+        logger.warning("insights_stats_browser_failed err=%r", e)
 
     # Tasks : pending vs done
     try:
@@ -741,7 +741,7 @@ async def _gather_cross_source_stats(db: AsyncSession, now: datetime) -> dict[st
             "done_7d": int(n_done_7d),
         }
     except Exception as e:
-        logger.debug("insights_stats_tasks_failed err=%r", e)
+        logger.warning("insights_stats_tasks_failed err=%r", e)
 
     return stats
 
@@ -788,7 +788,8 @@ async def _llm_cross_source_insights(db: AsyncSession, now: datetime) -> list[In
 
     try:
         stats = await _gather_cross_source_stats(db, now)
-    except Exception:
+    except Exception as e:
+        logger.warning("llm_insights_skipped reason=stats_gather_failed err=%r", e)
         return []
 
     # Skip si pas assez de data pour etre interessant
@@ -811,7 +812,8 @@ async def _llm_cross_source_insights(db: AsyncSession, now: datetime) -> list[In
             )
             r.raise_for_status()
             response_text = r.json().get("response", "").strip()
-    except Exception:
+    except Exception as e:
+        logger.warning("llm_insights_skipped reason=ollama_call_failed err=%r", e)
         return []
 
     # Parse le JSON retourne (parfois entoure de ```json ... ```)

@@ -103,14 +103,29 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.app_env.lower() in ("prod", "production")
+        # strip() : evite qu'un espace de trop dans .env ("production ") fasse
+        # passer le hub en mode dev par accident, ce qui transformerait le
+        # middleware Cloudflare Access en transparent.
+        return self.app_env.strip().lower() in ("prod", "production")
 
     def validate_for_production(self) -> None:
         """Vérifie que la conf est safe pour la prod. À appeler au startup.
 
         Lève RuntimeError si quelque chose de critique manque/insecure.
+        En dev, log un warning si secret_key est encore au défaut (sinon les
+        OAuth tokens en DB sont chiffrés avec une clé connue de tout le monde).
         """
         if not self.is_production:
+            if self.secret_key == "changeme" or self.secret_key.startswith("changeme"):
+                # Import local pour eviter cycle (logging utilise config)
+                import warnings
+
+                warnings.warn(
+                    "SECRET_KEY au defaut 'changeme' : OAuth tokens en DB seront "
+                    "chiffres avec une cle publique. Genere-en un avec : "
+                    "python -c \"import secrets; print(secrets.token_urlsafe(32))\"",
+                    stacklevel=2,
+                )
             return
         if self.secret_key == "changeme" or self.secret_key.startswith("changeme"):
             raise RuntimeError(

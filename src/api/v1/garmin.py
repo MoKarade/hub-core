@@ -180,18 +180,26 @@ def _load_api_sync(tokens_json: str) -> Any:
         try:
             settings = api.get_userprofile_settings() or {}
             api.display_name = settings.get("displayName")
-        except Exception:
-            pass  # Sans display_name, get_stats échouera mais les autres endpoints tiendront
+        except Exception as e:
+            # Sans display_name, get_stats échouera mais les autres endpoints tiendront.
+            # On log en warning : si ça arrive en prod, ~25 métriques par jour sont
+            # silencieusement perdues — Marc doit le voir.
+            logger.warning("garmin_display_name_fetch_failed", err=str(e)[:200])
 
     return api
 
 
 def _safe(fn: Any, label: str) -> Any:
-    """Appelle fn(), logue l'erreur et retourne None si ça échoue."""
+    """Appelle fn(), logue l'erreur et retourne None si ça échoue.
+
+    Log en warning (pas debug) : un endpoint Garmin down ou un token expiré
+    fait silencieusement perdre une métrique santé. Marc doit le voir dans
+    les logs sans avoir à activer DEBUG.
+    """
     try:
         return fn()
     except Exception as e:
-        logger.debug("garmin_api_error", label=label, err=str(e)[:120])
+        logger.warning("garmin_api_error", label=label, err=str(e)[:200])
         return None
 
 
@@ -652,20 +660,29 @@ async def garmin_sync(
     ingested = 0
     updated = 0
 
+    # Charge en 1 requete tous les HealthMetric existants pour la plage couverte
+    # (au lieu d'1 SELECT par (date, metric) — ~1050 round-trips pour 30j x 35 metriques)
+    days = [date.fromisoformat(d) for d in all_days]
+    if days:
+        existing_rows = (
+            await db.execute(
+                select(HealthMetric).where(
+                    HealthMetric.user_email == payload.user_email,
+                    HealthMetric.source == "garmin",
+                    HealthMetric.date.in_(days),
+                )
+            )
+        ).scalars().all()
+        existing_map: dict[tuple[date, str], HealthMetric] = {
+            (row.date, row.metric): row for row in existing_rows
+        }
+    else:
+        existing_map = {}
+
     for date_str, day_metrics in all_days.items():
         day = date.fromisoformat(date_str)
         for metric_name, value in day_metrics.items():
-            existing = (
-                await db.execute(
-                    select(HealthMetric).where(
-                        HealthMetric.user_email == payload.user_email,
-                        HealthMetric.date == day,
-                        HealthMetric.metric == metric_name,
-                        HealthMetric.source == "garmin",
-                    )
-                )
-            ).scalar_one_or_none()
-
+            existing = existing_map.get((day, metric_name))
             if existing:
                 existing.value = value
                 updated += 1

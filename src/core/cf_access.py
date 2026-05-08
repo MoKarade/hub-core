@@ -125,8 +125,17 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
         team_domain = settings.cf_access_team_domain
         audience = settings.cf_access_audience
 
-        # Pas configuré = mode dev local, on skip complètement
+        # Pas configuré + mode prod : on bloque tout sauf health (defense en
+        # profondeur si quelqu'un a foire le startup-check via env edge case).
         if not team_domain or not audience:
+            if settings.is_production and request.url.path not in self.SKIP_PATHS:
+                logger.error(
+                    "cf_access_misconfigured_in_production", path=request.url.path
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Cloudflare Access non configuré en production"},
+                )
             return await call_next(request)
 
         # Path skipped (health, openapi, etc.)

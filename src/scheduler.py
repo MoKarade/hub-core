@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -205,8 +205,13 @@ async def _job_streaming(db: AsyncSession) -> str:
 
     try:
         await _load_trakt_token(db, _OWNER_EMAIL)
-    except Exception:
+    except (LookupError, ValueError, KeyError):
+        # Token absent ou format invalide : skip propre, pas d'alerte
         return "skipped (no tokens, run /v1/streaming/connect first)"
+    except Exception as e:
+        # Erreur DB / connexion / chiffrement : on veut le voir, pas un skip silencieux
+        logger.warning("scheduler_streaming_token_load_failed", err=str(e))
+        return f"skipped (token load error: {type(e).__name__})"
 
     settings = get_settings()
     res = await sync_streaming(
@@ -299,7 +304,7 @@ async def start_scheduler(settings: Settings) -> None:
             replace_existing=True,
             # Decale le 1er run de 30s pour laisser le serveur finir son startup
             next_run_time=datetime.now(UTC).replace(microsecond=0)
-            + _delay_secs(30 + (hash(job_id) % 60)),
+            + timedelta(seconds=30 + (hash(job_id) % 60)),
             max_instances=1,  # Pas de chevauchement si un job traine
             coalesce=True,  # Si on rate des runs, on en fait UN seul
             misfire_grace_time=300,
@@ -334,13 +339,6 @@ async def stop_scheduler() -> None:
     except Exception as e:
         logger.error("scheduler_stop_failed", error=str(e))
     _scheduler = None
-
-
-def _delay_secs(seconds: int):
-    """Helper : retourne un timedelta. Importe localement pour eviter cycle import."""
-    from datetime import timedelta
-
-    return timedelta(seconds=seconds)
 
 
 # ─── Manual trigger (admin endpoint /v1/scheduler/run/{job}) ──────────────────

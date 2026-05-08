@@ -26,6 +26,7 @@ dependencies = [
     "feedparser>=6.0.11",   # Parsing RSS Google News (Phase 6)
     "pywebpush>=2.0.0",     # Web Push notifications PWA (Phase 6)
     "py-vapid>=1.9.1",      # Genere/signe les VAPID keys (Phase 6)
+    "pgvector>=0.3.0",      # Type adapter SQLAlchemy pour Vector(N) - photo_embeddings (Phase 7+)
 ]
 
 [project.optional-dependencies]

@@ -2,9 +2,32 @@
 
 import logging
 import os
+import re
 import sys
+from typing import Any
 
 import structlog
+
+# Cles de log dont la valeur doit etre redactee (matching case-insensitive)
+_SENSITIVE_KEY_RE = re.compile(
+    r"(token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+    r"authorization|cookie|jwt|fernet|encrypted)",
+    re.IGNORECASE,
+)
+
+
+def _redact_processor(
+    logger: Any, method_name: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Redact les valeurs des cles qui ressemblent a des secrets.
+
+    Defense en profondeur : si un developpeur fait `logger.info("oauth", token=t)`
+    par erreur, le token n'apparait pas en clair dans les logs.
+    """
+    for key in list(event_dict.keys()):
+        if _SENSITIVE_KEY_RE.search(key):
+            event_dict[key] = "***REDACTED***"
+    return event_dict
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -20,7 +43,7 @@ def setup_logging(level: str = "INFO") -> None:
         level=log_level,
     )
 
-    app_env = os.getenv("APP_ENV", "dev").lower()
+    app_env = os.getenv("APP_ENV", "dev").strip().lower()
     is_production = app_env in ("prod", "production")
     renderer = (
         structlog.processors.JSONRenderer() if is_production else structlog.dev.ConsoleRenderer()
@@ -31,6 +54,7 @@ def setup_logging(level: str = "INFO") -> None:
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
+            _redact_processor,
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),

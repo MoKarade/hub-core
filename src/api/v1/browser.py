@@ -231,15 +231,20 @@ async def browser_stats(
     )
     top_domains = [{"domain": r[0], "count": r[1]} for r in (await db.execute(top_q)).all()]
 
-    # By hour (0..23) — strftime SQLite-only, fallback si Postgres
+    # By hour (0..23) + dow : strftime sur SQLite, extract sur Postgres
     by_hour: list[dict[str, Any]] = []
     by_dow: list[dict[str, Any]] = []
+    is_postgres = db.get_bind().dialect.name == "postgresql"
     try:
+        if is_postgres:
+            hour_expr = func.extract("hour", BrowserHistory.visited_at)
+            dow_expr = func.extract("dow", BrowserHistory.visited_at)
+        else:
+            hour_expr = func.strftime("%H", BrowserHistory.visited_at)
+            dow_expr = func.strftime("%w", BrowserHistory.visited_at)
+
         hour_q = (
-            select(
-                func.strftime("%H", BrowserHistory.visited_at).label("h"),
-                func.count().label("c"),
-            )
+            select(hour_expr.label("h"), func.count().label("c"))
             .where(*where)
             .group_by("h")
             .order_by("h")
@@ -247,23 +252,18 @@ async def browser_stats(
         by_hour = [{"hour": int(r[0]), "count": r[1]} for r in (await db.execute(hour_q)).all()]
 
         dow_q = (
-            select(
-                func.strftime("%w", BrowserHistory.visited_at).label("d"),
-                func.count().label("c"),
-            )
+            select(dow_expr.label("d"), func.count().label("c"))
             .where(*where)
             .group_by("d")
             .order_by("d")
         )
-        # %w SQLite : 0=dimanche..6=samedi -> remap pour FR (0=lundi..6=dimanche)
+        # SQLite et Postgres : 0=dimanche..6=samedi -> remap pour FR (0=lundi..6=dimanche)
         raw = [(int(r[0]), r[1]) for r in (await db.execute(dow_q)).all()]
-        # 0->6, 1->0, 2->1, ..., 6->5
         remap = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
         by_dow = [{"day": remap.get(d, d), "count": c} for d, c in raw]
         by_dow.sort(key=lambda x: x["day"])
-    except Exception:
-        # Postgres : strftime indispo, on retourne vide pour l'instant
-        pass
+    except Exception as e:
+        logger.warning("browser_stats_time_failed err=%r dialect=%s", e, db.get_bind().dialect.name)
 
     return StatsResponse(
         total_visits=int(total),

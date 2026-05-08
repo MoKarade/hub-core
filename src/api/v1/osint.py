@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/osint", tags=["osint"])
 
+# Lock par outil : empeche 2 subprocess holehe/sherlock simultanes (chaque scan
+# peut durer 2-4 min). Sans ca, 5 appels en rafale = 5 process simultanes qui
+# saturent le PC.
+_TOOL_LOCKS: dict[str, asyncio.Lock] = {
+    "holehe": asyncio.Lock(),
+    "sherlock": asyncio.Lock(),
+}
+
 
 # ---------------------------------------------------------------------
 # Schemas
@@ -163,12 +171,15 @@ def _parse_holehe_output(stdout: str) -> list[OsintHit]:
     return hits
 
 
-@router.post("/holehe", response_model=OsintResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post("/holehe", response_model=OsintResponse, dependencies=[Depends(rate_limit(1, 300))])
 async def scan_email_holehe(payload: HoleheRequest) -> OsintResponse:
     """Scan l'email contre 120+ services via Holehe.
 
     Holehe doit etre installe (`pip install holehe`).
     Le binaire est cherche dans le PATH.
+
+    Rate limite a 1 scan / 5 min + lock global : un seul holehe simultane.
+    Chaque scan peut durer 2-4 min, on evite la saturation CPU/reseau.
     """
     binary = _find_tool("holehe")
     if not binary:
@@ -177,32 +188,40 @@ async def scan_email_holehe(payload: HoleheRequest) -> OsintResponse:
             "holehe non installe. Lance: pip install holehe",
         )
 
-    import time
-
-    start = time.monotonic()
-    rc, stdout, stderr = await _run_subprocess(
-        [binary, "--only-used", str(payload.email)],
-        timeout=180.0,
-    )
-    duration = time.monotonic() - start
-
-    if rc != 0 and not stdout:
-        logger.error("holehe_failed: rc=%d stderr=%s", rc, stderr[:500])
+    lock = _TOOL_LOCKS["holehe"]
+    if lock.locked():
         raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            f"holehe a echoue (rc={rc}): {stderr[:200]}",
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Un scan holehe est deja en cours. Attends qu'il termine.",
         )
 
-    hits = _parse_holehe_output(stdout)
-    found = [h for h in hits if h.status == "found"]
-    return OsintResponse(
-        tool="holehe",
-        target=str(payload.email),
-        duration_seconds=round(duration, 2),
-        total_checked=len(hits),
-        found_count=len(found),
-        hits=hits,
-    )
+    import time
+
+    async with lock:
+        start = time.monotonic()
+        rc, stdout, stderr = await _run_subprocess(
+            [binary, "--only-used", str(payload.email)],
+            timeout=180.0,
+        )
+        duration = time.monotonic() - start
+
+        if rc != 0 and not stdout:
+            logger.error("holehe_failed: rc=%d stderr=%s", rc, stderr[:500])
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"holehe a echoue (rc={rc}): {stderr[:200]}",
+            )
+
+        hits = _parse_holehe_output(stdout)
+        found = [h for h in hits if h.status == "found"]
+        return OsintResponse(
+            tool="holehe",
+            target=str(payload.email),
+            duration_seconds=round(duration, 2),
+            total_checked=len(hits),
+            found_count=len(found),
+            hits=hits,
+        )
 
 
 # ---------------------------------------------------------------------
@@ -210,11 +229,12 @@ async def scan_email_holehe(payload: HoleheRequest) -> OsintResponse:
 # ---------------------------------------------------------------------
 
 
-@router.post("/sherlock", response_model=OsintResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post("/sherlock", response_model=OsintResponse, dependencies=[Depends(rate_limit(1, 300))])
 async def scan_username_sherlock(payload: SherlockRequest) -> OsintResponse:
     """Scan le username contre 400+ reseaux sociaux via Sherlock.
 
     Sherlock doit etre installe (`pip install sherlock-project`).
+    Rate limite a 1 scan / 5 min + lock global (un seul sherlock simultane).
     """
     # sherlock CLI binary name varie : sherlock ou sherlock-project
     binary = _find_tool("sherlock") or _find_tool("sherlock-project")
@@ -222,6 +242,13 @@ async def scan_username_sherlock(payload: SherlockRequest) -> OsintResponse:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "sherlock non installe. Lance: pip install sherlock-project",
+        )
+
+    lock = _TOOL_LOCKS["sherlock"]
+    if lock.locked():
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Un scan sherlock est deja en cours. Attends qu'il termine.",
         )
 
     import json as json_mod
@@ -234,60 +261,61 @@ async def scan_username_sherlock(payload: SherlockRequest) -> OsintResponse:
         json_path = tmp.name
 
     try:
-        start = time.monotonic()
-        rc, stdout, stderr = await _run_subprocess(
-            [
-                binary,
-                "--json",
-                json_path,
-                "--print-found",
-                "--no-color",
-                "--timeout",
-                "10",
-                payload.username,
-            ],
-            timeout=240.0,
-        )
-        duration = time.monotonic() - start
-
-        # Sherlock peut returncode != 0 meme en succes, on essaie de parser le JSON
-        try:
-            with open(json_path, encoding="utf-8") as f:
-                data = json_mod.load(f)
-        except (FileNotFoundError, json_mod.JSONDecodeError) as e:
-            logger.error(
-                "sherlock_json_unreadable: rc=%d err=%s stderr=%s",
-                rc,
-                str(e),
-                stderr[:500],
+        async with lock:
+            start = time.monotonic()
+            rc, stdout, stderr = await _run_subprocess(
+                [
+                    binary,
+                    "--json",
+                    json_path,
+                    "--print-found",
+                    "--no-color",
+                    "--timeout",
+                    "10",
+                    payload.username,
+                ],
+                timeout=240.0,
             )
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                f"sherlock JSON illisible : {e}",
-            ) from e
+            duration = time.monotonic() - start
 
-        # data : { "ServiceName": { "url_user": "...", "status": {...}, ... } }
-        hits: list[OsintHit] = []
-        for svc, info in data.items():
-            url = info.get("url_user")
-            status_obj = info.get("status", {})
-            status_name = status_obj.get("status") if isinstance(status_obj, dict) else None
-            if status_name == "Claimed":
-                hits.append(OsintHit(service=svc, url=url, status="found"))
-            elif status_name == "Available":
-                hits.append(OsintHit(service=svc, status="not_found"))
-            elif status_name == "Unknown":
-                hits.append(OsintHit(service=svc, status="error"))
+            # Sherlock peut returncode != 0 meme en succes, on essaie de parser le JSON
+            try:
+                with open(json_path, encoding="utf-8") as f:
+                    data = json_mod.load(f)
+            except (FileNotFoundError, json_mod.JSONDecodeError) as e:
+                logger.error(
+                    "sherlock_json_unreadable: rc=%d err=%s stderr=%s",
+                    rc,
+                    str(e),
+                    stderr[:500],
+                )
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY,
+                    f"sherlock JSON illisible : {e}",
+                ) from e
 
-        found = [h for h in hits if h.status == "found"]
-        return OsintResponse(
-            tool="sherlock",
-            target=payload.username,
-            duration_seconds=round(duration, 2),
-            total_checked=len(hits),
-            found_count=len(found),
-            hits=hits,
-        )
+            # data : { "ServiceName": { "url_user": "...", "status": {...}, ... } }
+            hits: list[OsintHit] = []
+            for svc, info in data.items():
+                url = info.get("url_user")
+                status_obj = info.get("status", {})
+                status_name = status_obj.get("status") if isinstance(status_obj, dict) else None
+                if status_name == "Claimed":
+                    hits.append(OsintHit(service=svc, url=url, status="found"))
+                elif status_name == "Available":
+                    hits.append(OsintHit(service=svc, status="not_found"))
+                elif status_name == "Unknown":
+                    hits.append(OsintHit(service=svc, status="error"))
+
+            found = [h for h in hits if h.status == "found"]
+            return OsintResponse(
+                tool="sherlock",
+                target=payload.username,
+                duration_seconds=round(duration, 2),
+                total_checked=len(hits),
+                found_count=len(found),
+                hits=hits,
+            )
     finally:
         try:
             os.unlink(json_path)

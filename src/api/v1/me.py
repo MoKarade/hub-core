@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import Select, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import (
@@ -139,7 +139,7 @@ class DashboardResponse(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────
 
 
-async def _safe_count(db: AsyncSession, stmt) -> int:
+async def _safe_count(db: AsyncSession, stmt: Select[Any]) -> int:
     """Wrapper resilient : retourne 0 si la table/colonne n'existe pas."""
     try:
         n = (await db.execute(stmt)).scalar_one_or_none()
@@ -149,7 +149,7 @@ async def _safe_count(db: AsyncSession, stmt) -> int:
         return 0
 
 
-async def _safe_scalar(db: AsyncSession, stmt) -> Any:
+async def _safe_scalar(db: AsyncSession, stmt: Select[Any]) -> Any:
     try:
         return (await db.execute(stmt)).scalar_one_or_none()
     except Exception as e:
@@ -462,7 +462,7 @@ async def me_dashboard(
                     label = addr_row.short_label()
             locations.most_visited_place = label or (_place_id[:30] if _place_id else "?")
     except Exception as e:
-        logger.debug("me_locations_top_place_failed err=%r", e)
+        logger.warning("me_locations_top_place_failed err=%r", e)
 
     # ── Screen time section ──────────────────────────────────────────────
     screen = ScreenTimeSection()
@@ -480,7 +480,7 @@ async def me_dashboard(
             {"domain": r[0], "count": int(r[1])} for r in (await db.execute(top_dom_q)).all()
         ]
     except Exception as e:
-        logger.debug("me_screen_browser_failed err=%r", e)
+        logger.warning("me_screen_browser_failed err=%r", e)
 
     # Gaming : delta entre snapshots oldest/newest sur la periode
     try:
@@ -508,7 +508,7 @@ async def me_dashboard(
         if gaming_total > 0:
             counts.steam_games_played = len(gaming_per_game)
     except Exception as e:
-        logger.debug("me_screen_gaming_failed err=%r", e)
+        logger.warning("me_screen_gaming_failed err=%r", e)
 
     # Streaming runtime
     try:
@@ -521,7 +521,7 @@ async def me_dashboard(
         if streaming_runtime:
             screen.streaming_total_runtime_h = round(float(streaming_runtime) / 60, 1)
     except Exception as e:
-        logger.debug("me_screen_streaming_failed err=%r", e)
+        logger.warning("me_screen_streaming_failed err=%r", e)
 
     # ── Productivity section ─────────────────────────────────────────────
     productivity = ProductivitySection()
