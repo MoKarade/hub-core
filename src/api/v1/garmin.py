@@ -665,14 +665,18 @@ async def garmin_sync(
     days = [date.fromisoformat(d) for d in all_days]
     if days:
         existing_rows = (
-            await db.execute(
-                select(HealthMetric).where(
-                    HealthMetric.user_email == payload.user_email,
-                    HealthMetric.source == "garmin",
-                    HealthMetric.date.in_(days),
+            (
+                await db.execute(
+                    select(HealthMetric).where(
+                        HealthMetric.user_email == payload.user_email,
+                        HealthMetric.source == "garmin",
+                        HealthMetric.date.in_(days),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         existing_map: dict[tuple[date, str], HealthMetric] = {
             (row.date, row.metric): row for row in existing_rows
         }

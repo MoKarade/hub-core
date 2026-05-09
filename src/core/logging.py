@@ -16,9 +16,7 @@ _SENSITIVE_KEY_RE = re.compile(
 )
 
 
-def _redact_processor(
-    logger: Any, method_name: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+def _redact_processor(logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
     """Redact les valeurs des cles qui ressemblent a des secrets.
 
     Defense en profondeur : si un developpeur fait `logger.info("oauth", token=t)`

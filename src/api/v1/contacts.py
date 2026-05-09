@@ -55,6 +55,12 @@ class ContactItem(BaseModel):
     photo_url: str | None
 
 
+class ContactDetail(ContactItem):
+    addresses: list[str]
+    notes: str | None
+    last_modified: datetime | None
+
+
 async def _resolve_token(db: AsyncSession, user_email: str) -> str:
     for service in ("people", "all"):
         try:
@@ -262,6 +268,31 @@ async def list_contacts(
             or ql in it.person_id.lower()
         ]
     return items
+
+
+@router.get("/{contact_id}", response_model=ContactDetail)
+async def get_contact(
+    contact_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ContactDetail:
+    contact = await db.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Contact introuvable")
+    return ContactDetail(
+        id=contact.id,
+        person_id=contact.person_id,
+        display_name=contact.display_name,
+        given_name=contact.given_name,
+        family_name=contact.family_name,
+        emails=contact.emails or [],
+        phones=contact.phones or [],
+        organizations=contact.organizations or [],
+        addresses=contact.addresses or [],
+        birthday=contact.birthday,
+        photo_url=contact.photo_url,
+        notes=contact.notes,
+        last_modified=contact.last_modified,
+    )
 
 
 class ContactsStats(BaseModel):

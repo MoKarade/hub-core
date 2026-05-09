@@ -86,6 +86,8 @@ class FaceClusterOut(BaseModel):
     name: str | None
     photo_count: int
     sample_face_id: UUID | None
+    sample_media_id: str | None = None
+    """media_id Google de la photo contenant le sample_face (pour thumbnail UI)."""
 
 
 class FaceClusterRename(BaseModel):
@@ -484,18 +486,60 @@ async def cluster_faces(
     )
 
 
+async def _hydrate_sample_media_id(db: AsyncSession, cluster: FaceCluster) -> FaceClusterOut:
+    """Construit un FaceClusterOut en resolvant media_id de la sample face."""
+    media_id: str | None = None
+    if cluster.sample_face_id is not None:
+        stmt = (
+            select(Photo.media_id)
+            .join(PhotoFace, PhotoFace.photo_id == Photo.id)
+            .where(PhotoFace.id == cluster.sample_face_id)
+        )
+        media_id = (await db.execute(stmt)).scalar_one_or_none()
+    return FaceClusterOut(
+        id=cluster.id,
+        name=cluster.name,
+        photo_count=cluster.photo_count,
+        sample_face_id=cluster.sample_face_id,
+        sample_media_id=media_id,
+    )
+
+
 @router.get("/face-clusters", response_model=list[FaceClusterOut])
 async def list_face_clusters(
     db: Annotated[AsyncSession, Depends(get_db)],
     only_named: bool = False,
     limit: int = 100,
 ) -> list[FaceClusterOut]:
-    """Liste les clusters tries par photo_count desc."""
+    """Liste les clusters tries par photo_count desc, avec media_id du sample."""
     stmt = select(FaceCluster).order_by(desc(FaceCluster.photo_count)).limit(limit)
     if only_named:
         stmt = stmt.where(FaceCluster.name.is_not(None))
     rows = (await db.execute(stmt)).scalars().all()
-    return [FaceClusterOut.model_validate(r) for r in rows]
+
+    # Resolve sample media_ids en 1 seule requete
+    sample_ids = [r.sample_face_id for r in rows if r.sample_face_id is not None]
+    media_map: dict[UUID, str] = {}
+    if sample_ids:
+        media_stmt = (
+            select(PhotoFace.id, Photo.media_id)
+            .join(Photo, Photo.id == PhotoFace.photo_id)
+            .where(PhotoFace.id.in_(sample_ids))
+        )
+        media_map = {
+            face_id: media_id for face_id, media_id in (await db.execute(media_stmt)).all()
+        }
+
+    return [
+        FaceClusterOut(
+            id=r.id,
+            name=r.name,
+            photo_count=r.photo_count,
+            sample_face_id=r.sample_face_id,
+            sample_media_id=media_map.get(r.sample_face_id) if r.sample_face_id else None,
+        )
+        for r in rows
+    ]
 
 
 @router.patch("/face-clusters/{cluster_id}", response_model=FaceClusterOut)
@@ -511,7 +555,7 @@ async def rename_cluster(
     cluster.name = payload.name
     await db.commit()
     await db.refresh(cluster)
-    return FaceClusterOut.model_validate(cluster)
+    return await _hydrate_sample_media_id(db, cluster)
 
 
 @router.get("/by-face/{cluster_id}", response_model=list[dict[str, Any]])

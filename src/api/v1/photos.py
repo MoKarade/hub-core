@@ -342,9 +342,7 @@ async def enrich_gps(
     except Exception as e:
         # Si le commit fail apres N geotaggings reussis, on ne peut pas perdre
         # silencieusement le travail deja fait. Log error + remonte 500.
-        logger.error(
-            "enrich_gps_commit_failed: lost_photos=%d err=%r", with_gps, e
-        )
+        logger.error("enrich_gps_commit_failed: lost_photos=%d err=%r", with_gps, e)
         await db.rollback()
         raise HTTPException(  # noqa: B904
             status.HTTP_500_INTERNAL_SERVER_ERROR,

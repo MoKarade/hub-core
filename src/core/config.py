@@ -123,7 +123,7 @@ class Settings(BaseSettings):
                 warnings.warn(
                     "SECRET_KEY au defaut 'changeme' : OAuth tokens en DB seront "
                     "chiffres avec une cle publique. Genere-en un avec : "
-                    "python -c \"import secrets; print(secrets.token_urlsafe(32))\"",
+                    'python -c "import secrets; print(secrets.token_urlsafe(32))"',
                     stacklevel=2,
                 )
             return
